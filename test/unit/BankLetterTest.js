@@ -3,21 +3,14 @@
 /* eslint-env node, mocha */
 
 const { assert } = require('chai');
-const { join, resolve } = require('path');
+const { join } = require('path');
 const { readFileSync, mkdirSync, existsSync } = require('fs');
 
 
 const BankLetter = require('../../lib/BankLetter');
-const ebics = require('../../');
+const createTestClient = require('../create-test-client');
 
-const client = new ebics.Client({
-	url: 'https://iso20022test.credit-suisse.com/ebicsweb/ebicsweb',
-	partnerId: 'CRS04381',
-	userId: 'CRS04381',
-	hostId: 'CRSISOTB',
-	passphrase: 'test',
-	keyStorage: ebics.fsKeysStorage(resolve(__dirname, '../support/TEST_KEYS.key')),
-});
+const client = createTestClient();
 
 const createDir = (where) => {
 	try {

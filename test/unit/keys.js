@@ -16,7 +16,7 @@ describe('Keys management', () => {
 		const newKey = Key.generate();
 
 		it('private key', () => {
-			assert.isTrue(newKey.isPrivate());
+			assert.isTrue(newKey.type === 'private');
 		});
 
 		it('that has the right key size', () => {
@@ -37,7 +37,7 @@ describe('Keys management', () => {
 			const newKey = new Key({ mod: m, exp: e });
 
 			it('and is really public', () => {
-				assert.isTrue(newKey.isPublic());
+				assert.isTrue(newKey.type === 'public');
 			});
 
 
@@ -59,7 +59,7 @@ describe('Keys management', () => {
 			const newKey = new Key({ mod: m, exp: e });
 
 			it('and is really public', () => {
-				assert.isTrue(newKey.isPublic());
+				assert.isTrue(newKey.type === 'public');
 			});
 
 			it('and has a propper mod as a string', () => {
@@ -78,7 +78,7 @@ describe('Keys management', () => {
 		const newKey = new Key({ pem });
 
 		it('and is really public', () => {
-			assert.isTrue(newKey.isPublic());
+			assert.isTrue(newKey.type === 'public');
 		});
 
 		it('and has a propper(the same) pem string', () => {
