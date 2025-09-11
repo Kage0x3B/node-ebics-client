@@ -28,7 +28,9 @@ export class Client {
 	send(order: UploadOrder): Promise<EbicsUploadResponse>;
 	send(order: DownloadOrder): Promise<EbicsDownloadResponse>;
 	send(order: Order): Promise<EbicsBaseResponse>;
+	setKeys(keys: Partial<Keys>): Promise<void>;
 	setBankKeys(bankKeys: BankKeys): Promise<void>;
+	generateKeys(): Promise<Keys>;
 }
 
 export interface EbicsBaseResponse {

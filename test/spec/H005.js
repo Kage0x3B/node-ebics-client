@@ -37,6 +37,7 @@ const validateXML = (() => {
 			],
 			preload,
 		});
+		if(!results.valid) console.log(results.errors.map(e => e.message).join('\n'));
 		return results.valid;
 	};
 })();
@@ -45,10 +46,16 @@ const client = createTestClient();
 
 const { OrdersH005: Orders } = ebics;
 
+const iniBuilder = fn => fn()
 const uploadBuilder = fn => fn('', undefined);
 const dateBuilder = fn => fn({ start: '2018-01-01', end: '2019-01-01' });
 
 const fnOrders = {
+	INI: iniBuilder,
+	HIA: iniBuilder,
+	H3K: iniBuilder,
+	HPB: iniBuilder,
+
 	// upload | document
 	DCT: uploadBuilder,
 	DDT: uploadBuilder,
