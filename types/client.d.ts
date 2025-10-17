@@ -6,6 +6,7 @@ import {
 	UploadOrder,
 } from "./orders";
 import { FsKeysStorage, TracesStorage } from "./storages";
+import { Agent } from "http";
 
 export interface ClientOptions {
 	url: string;
@@ -20,6 +21,7 @@ export interface ClientOptions {
 	bankShortName?: string;
 	languageCode?: string;
 	storageLocation?: string;
+	agent?: Agent;
 }
 
 export class Client {
