@@ -7,6 +7,14 @@ import {
 } from "./orders";
 import { FsKeysStorage, TracesStorage } from "./storages";
 import { Agent } from "http";
+import { pki } from "node-forge";
+
+export interface CertificateOptions {
+	subject: string | pki.CertificateField[];
+	issuer?: string | pki.CertificateField[];
+	notBefore?: Date;
+	notAfter?: Date;
+}
 
 export interface ClientOptions {
 	url: string;
@@ -32,7 +40,7 @@ export class Client {
 	send(order: Order): Promise<EbicsBaseResponse>;
 	setKeys(keys: Partial<Keys>): Promise<void>;
 	setBankKeys(bankKeys: BankKeys): Promise<void>;
-	generateKeys(): Promise<Keys>;
+	generateKeys(certificateOptions?: CertificateOptions, whichKeys?: ('A006' | 'E002' | 'X002' | 'bankE002' | 'bankX002')[]): Promise<Keys>;
 }
 
 export interface EbicsBaseResponse {

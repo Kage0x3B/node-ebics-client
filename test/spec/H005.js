@@ -8,7 +8,6 @@ const path = require('path');
 const fs = require('fs');
 
 const ebics = require('../..');
-const createTestClient = require('../create-test-client');
 
 const xmlLintWasm = require('xmllint-wasm');
 
@@ -37,16 +36,24 @@ const validateXML = (() => {
 			],
 			preload,
 		});
-		if(!results.valid) console.log(results.errors.map(e => e.message).join('\n'));
+		if (!results.valid) console.log(results.errors.map(e => e.message).join('\n'));
 		return results.valid;
 	};
 })();
 
-const client = createTestClient();
+const client = new ebics.Client({
+	url: 'https://iso20022test.credit-suisse.com/ebicsweb/ebicsweb',
+	partnerId: 'CRS04381',
+	userId: 'CRS04381',
+	hostId: 'CRSISOTB',
+	passphrase: Buffer.alloc(32, 0),
+	iv: Buffer.alloc(16, 0),
+	keyStorage: ebics.inMemoryKeysStorage(),
+});
 
 const { OrdersH005: Orders } = ebics;
 
-const iniBuilder = fn => fn()
+const iniBuilder = fn => fn();
 const uploadBuilder = fn => fn('', undefined);
 const dateBuilder = fn => fn({ start: '2018-01-01', end: '2019-01-01' });
 
@@ -91,6 +98,9 @@ describe('H005 order generation', () => {
 		const { operation } = order;
 
 		it(`[${operation}] ${type} order generation`, async () => {
+			await client.generateKeys({
+				subject: 'ebics.example.com',
+			}, ['A006', 'E002', 'X002', 'bankE002', 'bankX002']);
 			const signedOrder = await client.signOrder(order);
 			assert.isTrue(await validateXML(signedOrder));
 		});
