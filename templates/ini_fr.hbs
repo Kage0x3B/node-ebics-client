@@ -33,6 +33,12 @@
 			</tr>
 		</table>
 		<p>Clé publique (Public Key) pour la signature électronique (A006)</p>
+		{{#if (hasCertificate A006)}}
+		<p>Certificat:</p>
+		<p>
+			<pre>{{ certificatePem A006 }}</pre>
+		</p>
+		{{else}}
 		<p>Exposant ({{ keyExponentBits A006 }} Bit):</p>
 		<p>
 			<code>{{ keyExponent A006 }}</code>
@@ -41,11 +47,12 @@
 		<p>
 			<code>{{ keyModulus A006 }}</code>
 		</p>
+		{{/if}}
 		<p>Hash (SHA-256):</p>
 		<p>
 			<code>{{ sha256 A006 }}</code>
 		</p>
-		<p>Je confirme par la présente la clé publique ci-dessus pour ma signature électronique.</p>
+		<p>Je confirme par la présente la clé publique / certificat ci-dessus pour ma signature électronique.</p>
 		<br/>
 		<br/>
 		<br/>
@@ -89,6 +96,12 @@
 	</table>
 	<div>
 		<p>Clé d'identification publique (X002)</p>
+		{{#if (hasCertificate X002)}}
+		<p>Certificat:</p>
+		<p>
+			<pre>{{ certificatePem X002 }}</pre>
+		</p>
+		{{else}}
 		<p>Exposant ({{ keyExponentBits X002 }} Bit):</p>
 		<p>
 			<code>{{ keyExponent X002 }}</code>
@@ -97,6 +110,7 @@
 		<p>
 			<code>{{ keyModulus X002 }}</code>
 		</p>
+		{{/if}}
 		<p>Hash (SHA-256):</p>
 		<p>
 			<code>{{ sha256 X002 }}</code>
@@ -129,6 +143,12 @@
 	</div>
 	<div>
 		<p>Clé de chiffrement publique (E002)</p>
+		{{#if (hasCertificate E002)}}
+		<p>Certificat:</p>
+		<p>
+			<pre>{{ certificatePem E002 }}</pre>
+		</p>
+		{{else}}
 		<p>Exposant ({{ keyExponentBits E002 }} Bit):</p>
 		<p>
 			<code>{{ keyExponent E002 }}</code>
@@ -137,11 +157,12 @@
 		<p>
 			<code>{{ keyModulus E002 }}</code>
 		</p>
+		{{/if}}
 		<p>Hash (SHA-256):</p>
 		<p>
 			<code>{{ sha256 E002 }}</code>
 		</p>
-		<p>Je confirme par la présente les clés publiques ci-dessus.</p>
+		<p>Je confirme par la présente les clés publiques / certificats ci-dessus.</p>
 		<br/>
 		<br/>
 		<br/>
