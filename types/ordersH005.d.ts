@@ -61,7 +61,7 @@ export type OrderH005 =
 	| DownloadOrderH005;
 
 // Order factory options & predefined orders
-export interface GenericUploadOrderOptionsH005 {
+interface GenericCommonOrderOptionsH005 {
 	serviceName: string;
 	msgName: string;
 	msgVersion?: string;
@@ -72,8 +72,12 @@ export interface GenericUploadOrderOptionsH005 {
 	containerType?: string;
 }
 
-export interface GenericDownloadOrderOptionsH005
-	extends GenericUploadOrderOptionsH005 {
+export interface GenericUploadOrderOptionsH005 extends GenericCommonOrderOptionsH005 {
+	signatureFlag?: string;
+	requestEDS?: boolean;
+}
+
+export interface GenericDownloadOrderOptionsH005 extends GenericCommonOrderOptionsH005 {
 	start?: string | Date;
 	end?: string | Date;
 }
