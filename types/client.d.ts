@@ -34,6 +34,7 @@ export interface ClientOptions {
 
 export class Client {
 	constructor(options: ClientOptions);
+	produceOrderXml(order: Order): Promise<string>;
 	send(order: KeyManagementOrder): Promise<EbicsKeyManagementResponse>;
 	send(order: UploadOrder): Promise<EbicsUploadResponse>;
 	send(order: DownloadOrder): Promise<EbicsDownloadResponse>;
