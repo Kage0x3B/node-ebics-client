@@ -1,6 +1,6 @@
 {
 	"name": "@kage0x3b/ebics-client",
-	"version": "5.0.0",
+	"version": "6.0.0-beta.0",
 	"description": "Node.js ISO 20022 Compliant EBICS Client (TypeScript fork with H005/EBICS 3.0 support)",
 	"type": "module",
 	"main": "./dist/cjs/index.cjs",
