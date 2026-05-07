@@ -15,9 +15,18 @@ npm-debug.log
 # Optional eslint cache
 .eslintcache
 
-# vscode
+# IDE
 /.vscode
+/.idea
 *.pid
 
 # Tests temporary
 .test_tmp
+
+# TypeScript build output
+dist/
+
+# Migration verification artifacts
+.verify/
+test-built/
+

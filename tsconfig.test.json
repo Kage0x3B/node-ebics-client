@@ -1,0 +1,26 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"types": ["node", "mocha"],
+		"paths": {
+			"ebics-client": ["./index.ts"],
+			"ebics-client/OrdersH004": ["./lib/predefinedOrders/H004/index.ts"],
+			"ebics-client/OrdersH005": ["./lib/predefinedOrders/H005/index.ts"]
+		}
+	},
+	"include": [
+		"index.ts",
+		"lib/**/*.ts",
+		"test/**/*.ts",
+		"types-vendor/**/*.d.ts"
+	],
+	"exclude": [
+		"node_modules",
+		"dist",
+		".verify",
+		"test-built",
+		"examples",
+		"test/types"
+	]
+}
