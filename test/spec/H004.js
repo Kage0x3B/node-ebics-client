@@ -8,11 +8,12 @@ const path = require('path');
 const fs = require('fs');
 
 const ebics = require('../../');
+const createTestClient = require('../create-test-client');
 
 const xmlLintWasm = require('xmllint-wasm');
 
 const validateXML = (() => {
-	const xsdDir = path.resolve(__dirname, '../xsd');
+	const xsdDir = path.resolve(__dirname, '../xsd/H004');
 	const schemaPath = path.resolve(xsdDir, 'ebics_H004.xsd');
 	const schemaDoc = fs.readFileSync(schemaPath, { encoding: 'utf8' });
 	const preload = fs
@@ -40,18 +41,9 @@ const validateXML = (() => {
 	};
 })();
 
-const client = new ebics.Client({
-	url: 'https://iso20022test.credit-suisse.com/ebicsweb/ebicsweb',
-	partnerId: 'CRS04381',
-	userId: 'CRS04381',
-	hostId: 'CRSISOTB',
-	passphrase: 'test',
-	keyStorage: ebics.fsKeysStorage(
-		path.resolve(__dirname, '../support/TEST_KEYS.key'),
-	),
-});
+const client = createTestClient();
 
-const { Orders } = ebics;
+const { OrdersH004: Orders } = ebics;
 
 /*
 upload :

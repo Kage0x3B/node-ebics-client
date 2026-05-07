@@ -3,22 +3,15 @@
 /* eslint-env node, mocha */
 
 const { readFileSync } = require('fs');
-const { join, resolve } = require('path');
+const { join } = require('path');
 
 const { assert } = require('chai');
 
 const H004Response = require('../../lib/orders/H004/response');
-const ebics = require('../../');
+const createTestClient = require('../create-test-client');
 
 
-const client = new ebics.Client({
-	url: 'https://iso20022test.credit-suisse.com/ebicsweb/ebicsweb',
-	partnerId: 'CRS04381',
-	userId: 'CRS04381',
-	hostId: 'CRSISOTB',
-	passphrase: 'test',
-	keyStorage: ebics.fsKeysStorage(resolve(__dirname, '../support/TEST_KEYS.key')),
-});
+const client = createTestClient();
 
 const buildResponse = (xmlPath) => {
 	const response = H004Response('<xml/>', {});
