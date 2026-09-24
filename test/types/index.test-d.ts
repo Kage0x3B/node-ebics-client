@@ -8,6 +8,8 @@ import {
 	inMemoryKeysStorage,
 	tracesStorage,
 	Orders,
+	EbicsClientError,
+	EbicsClientErrorCode,
 } from '../../dist/esm/index.mjs';
 import type {
 	ClientOptions,
@@ -29,6 +31,18 @@ expectAssignable<ClientOptions>({
 	hostId: 'h',
 	passphrase: 'pw',
 	keyStorage: fsKeysStorage('/tmp/k'),
+});
+
+// Transport and segmentation options
+expectAssignable<ClientOptions>({
+	url: 'https://x',
+	partnerId: 'p',
+	userId: 'u',
+	hostId: 'h',
+	passphrase: 'pw',
+	keyStorage: fsKeysStorage('/tmp/k'),
+	timeout: 30_000,
+	segmentSize: 64 * 1024,
 });
 
 const c = new Client({
@@ -87,8 +101,23 @@ expectType<string>(r.orderId);
 expectType<string>(r.technicalCode);
 declare const u: EbicsUploadResponse;
 expectAssignable<EbicsBaseResponse>(u);
+expectType<number | undefined>(u.numSegments);
+expectType<number | undefined>(u.segmentNumber);
 declare const dl: EbicsDownloadResponse;
 expectType<Buffer>(dl.orderData);
+expectType<number | undefined>(dl.numSegments);
+expectType<number | undefined>(dl.segmentNumber);
+
+// Error codes and details
+expectType<'EBICS_CLIENT_TIMEOUT'>(EbicsClientErrorCode.TIMEOUT);
+expectType<'EBICS_CLIENT_ORDER_DATA_UNREADABLE'>(EbicsClientErrorCode.ORDER_DATA_UNREADABLE);
+expectType<'EBICS_CLIENT_SEGMENT_MISMATCH'>(EbicsClientErrorCode.SEGMENT_MISMATCH);
+expectType<'EBICS_CLIENT_RECEIPT_FAILED'>(EbicsClientErrorCode.RECEIPT_FAILED);
+declare const err: EbicsClientError;
+expectType<boolean | undefined>(err.requestSent);
+expectType<number | undefined>(err.segmentNumber);
+expectType<number | undefined>(err.numSegments);
+expectType<Buffer | undefined>(err.orderData);
 declare const km: EbicsKeyManagementResponse;
 expectType<string>(km.orderData);
 expectType<BankKeys>(km.bankKeys);

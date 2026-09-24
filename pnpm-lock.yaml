@@ -23,9 +23,6 @@ importers:
       node-rsa:
         specifier: ^1.1.1
         version: 1.1.1
-      rock-req:
-        specifier: ^5.1.3
-        version: 5.2.1
       uuid:
         specifier: ^9.0.1
         version: 9.0.1
@@ -1392,10 +1389,6 @@ packages:
   reusify@1.1.0:
     resolution: {integrity: sha512-g6QUff04oZpHs0eG5p83rFLhHeV00ug/Yf9nZM6fLeUrPguBTkTQOdpAWWspMh55TZfVQDPaN3NQJfbVRAxdIw==}
     engines: {iojs: '>=1.0.0', node: '>=0.10.0'}
-
-  rock-req@5.2.1:
-    resolution: {integrity: sha512-OCLjjyTjwSsr6k2xZYsCEg82/vXj/F5Jv8GSWpntQB9CEiRZ1JdbbpBh6UjvE9nwt8jUyuVk8Vn7KwbW78yHJA==}
-    engines: {node: '>=16'}
 
   rolldown-plugin-dts@0.25.0:
     resolution: {integrity: sha512-GE3uDZgUuA9l6g+1u928TRmadd5IVhaWiwpWast2kCyLv9tYJJCC6E5HHkV0HGmwC5ZL73xh12/PRZI+KZ2vdQ==}
@@ -2901,8 +2894,6 @@ snapshots:
       supports-preserve-symlinks-flag: 1.0.0
 
   reusify@1.1.0: {}
-
-  rock-req@5.2.1: {}
 
   rolldown-plugin-dts@0.25.0(rolldown@1.0.0)(typescript@6.0.3):
     dependencies:

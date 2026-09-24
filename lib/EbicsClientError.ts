@@ -24,6 +24,22 @@ export const EbicsClientErrorCode = {
 	MISSING_TRANSACTION_ID: 'EBICS_CLIENT_MISSING_TRANSACTION_ID',
 	/** A follow-up phase was answered for a different TransactionID than the one in progress. */
 	TRANSACTION_ID_MISMATCH: 'EBICS_CLIENT_TRANSACTION_ID_MISMATCH',
+	/**
+	 * The bank did not answer within the configured timeout. `requestSent` tells whether the request
+	 * body had been sent completely; if so, the bank may have processed it — for a transfer the
+	 * outcome of the order is unknown.
+	 */
+	TIMEOUT: 'EBICS_CLIENT_TIMEOUT',
+	/** The downloaded order data could not be decrypted or decompressed. The bank was asked to deliver it again. */
+	ORDER_DATA_UNREADABLE: 'EBICS_CLIENT_ORDER_DATA_UNREADABLE',
+	/** The segments of a download do not add up: numbering out of order or more segments than announced. */
+	SEGMENT_MISMATCH: 'EBICS_CLIENT_SEGMENT_MISMATCH',
+	/**
+	 * The order data was downloaded and decrypted, but the positive receipt failed or the bank did
+	 * not confirm it. The bank may already consider the data delivered: the error carries it in
+	 * `orderData` — keep it.
+	 */
+	RECEIPT_FAILED: 'EBICS_CLIENT_RECEIPT_FAILED',
 } as const;
 
 export type EbicsClientErrorCode = (typeof EbicsClientErrorCode)[keyof typeof EbicsClientErrorCode];
@@ -41,6 +57,24 @@ export interface EbicsClientErrorDetails {
 	technicalCode?: string;
 	businessCode?: string;
 	transactionId?: string;
+	/** The segment (1-based) the failed request carried or asked for, in segmented transfers. */
+	segmentNumber?: number;
+	/** Total number of segments of the transaction, when known. */
+	numSegments?: number;
+	/** Timeouts only: whether the request body had been sent completely before the timeout hit. */
+	requestSent?: boolean;
+	/**
+	 * {@link EbicsClientErrorCode.ORDER_DATA_UNREADABLE} / {@link EbicsClientErrorCode.SEGMENT_MISMATCH}:
+	 * whether the ReceiptCode 1 asking the bank to deliver the data again went through.
+	 */
+	redeliveryRequested?: boolean;
+	/**
+	 * {@link EbicsClientErrorCode.RECEIPT_FAILED} only: the downloaded, decrypted order data. Not
+	 * enumerable, so logging or serialising the error does not dump the statement.
+	 */
+	orderData?: Buffer;
+	/** The underlying error, e.g. the decryption failure behind {@link EbicsClientErrorCode.ORDER_DATA_UNREADABLE}. */
+	cause?: unknown;
 }
 
 /** Upper bound for the raw body kept on the error, so a large HTML error page cannot bloat logs. */
@@ -57,14 +91,21 @@ export default class EbicsClientError extends Error implements EbicsClientErrorD
 	readonly technicalCode?: string;
 	readonly businessCode?: string;
 	readonly transactionId?: string;
+	readonly segmentNumber?: number;
+	readonly numSegments?: number;
+	readonly requestSent?: boolean;
+	declare readonly orderData?: Buffer;
+	/** Set once the client has tried to request redelivery; see {@link EbicsClientErrorDetails.redeliveryRequested}. */
+	redeliveryRequested?: boolean;
 
 	constructor(code: EbicsClientErrorCode, message: string, details: EbicsClientErrorDetails = {}) {
 		const context = [
 			details.orderType && `order ${details.orderType}`,
 			details.phase && `phase ${details.phase}`,
+			details.segmentNumber !== undefined && `segment ${details.segmentNumber}${details.numSegments ? `/${details.numSegments}` : ''}`,
 			details.httpStatus !== undefined && `HTTP ${details.httpStatus}`,
 		].filter(Boolean).join(', ');
-		super(`${code}: ${message}${context ? ` (${context})` : ''}`);
+		super(`${code}: ${message}${context ? ` (${context})` : ''}`, details.cause === undefined ? undefined : { cause: details.cause });
 
 		this.code = code;
 		this.phase = details.phase;
@@ -75,5 +116,11 @@ export default class EbicsClientError extends Error implements EbicsClientErrorD
 		this.technicalCode = details.technicalCode;
 		this.businessCode = details.businessCode;
 		this.transactionId = details.transactionId;
+		this.segmentNumber = details.segmentNumber;
+		this.numSegments = details.numSegments;
+		this.requestSent = details.requestSent;
+		this.redeliveryRequested = details.redeliveryRequested;
+		if (details.orderData !== undefined)
+			Object.defineProperty(this, 'orderData', { value: details.orderData, enumerable: false, configurable: true });
 	}
 }

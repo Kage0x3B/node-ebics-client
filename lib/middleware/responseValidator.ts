@@ -21,7 +21,7 @@ export interface RawEbicsResponse {
 export function assertEbicsResponse(
 	version: string,
 	raw: RawEbicsResponse,
-	context: Pick<EbicsClientErrorDetails, 'phase' | 'orderType'>,
+	context: Pick<EbicsClientErrorDetails, 'phase' | 'orderType' | 'segmentNumber' | 'numSegments'>,
 ): void {
 	const details: EbicsClientErrorDetails = {
 		...context,
@@ -78,7 +78,7 @@ export function assertEbicsResponse(
 export function assertReturnCodes(
 	codes: { technicalCode: string; businessCode: string },
 	raw: RawEbicsResponse,
-	context: Pick<EbicsClientErrorDetails, 'phase' | 'orderType'>,
+	context: Pick<EbicsClientErrorDetails, 'phase' | 'orderType' | 'segmentNumber' | 'numSegments'>,
 ): void {
 	const missing = [!codes.technicalCode && 'header', !codes.businessCode && 'body'].filter(Boolean);
 	if (!missing.length) return;

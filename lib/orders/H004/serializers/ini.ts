@@ -116,14 +116,10 @@ const process: Record<string, any> = {
 };
 
 export default {
-	rootName: '' as string,
-	xmlOptions: undefined as any,
-	xmlSchema: undefined as any,
-
 	async use(order: any, client: any) {
 		const keys = await client.keys();
 		const { orderDetails, transactionId } = order;
-		const { xmlOptions, xmlSchema, productString } = genericSerializer(client.host, transactionId);
+		const builder = genericSerializer(client.host, transactionId);
 		const orderType = orderDetails.OrderType.toUpperCase();
 		const ebicsAccount = {
 			partnerId: client.partnerId,
@@ -131,20 +127,13 @@ export default {
 			hostId: client.hostId,
 		};
 
-		this.rootName = process[orderType].rootName;
-		this.xmlOptions = xmlOptions;
-		this.xmlSchema = xmlSchema;
+		builder.rootName = process[orderType].rootName;
+		builder.xmlSchema.header = process[orderType].header(ebicsAccount, orderDetails, builder.productString);
+		builder.xmlSchema.body = process[orderType].body(ebicsAccount, keys, builder.xmlOptions);
 
-		this.xmlSchema.header = process[orderType].header(ebicsAccount, orderDetails, productString);
-		this.xmlSchema.body = process[orderType].body(ebicsAccount, keys, this.xmlOptions);
+		if (orderType !== 'HPB')
+			delete builder.xmlSchema.AuthSignature;
 
-		if (orderType !== 'HPB' && Object.prototype.hasOwnProperty.call(this.xmlSchema, 'AuthSignature'))
-			delete this.xmlSchema.AuthSignature;
-
-		return this;
-	},
-
-	toXML() {
-		return js2xmlparser.parse(this.rootName, this.xmlSchema, this.xmlOptions);
+		return builder;
 	},
 };

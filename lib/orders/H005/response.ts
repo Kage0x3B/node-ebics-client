@@ -1,4 +1,3 @@
-import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 
 import Crypto from '../../crypto/Crypto.js';
@@ -6,9 +5,8 @@ import Crypto from '../../crypto/Crypto.js';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import xpath from 'xpath';
 import errors from './errors.js';
+import { decryptOrderData } from '../orderData.js';
 import type Keys from '../../keymanagers/Keys.js';
-
-const DEFAULT_IV = Buffer.from(Array(16).fill(0, 0, 15));
 
 const lastChild = (node: any): any => {
 	let y = node.lastChild;
@@ -35,13 +33,46 @@ const responseFactory = (xml: string, keys: Keys) => ({
 	isLastSegment() {
 		const select = xpath.useNamespaces({ xmlns: 'urn:org:ebics:H005' });
 		const node = select(
-			"//xmlns:header/xmlns:mutable/*[@lastSegment='true']",
+			"//xmlns:header/xmlns:mutable/*[@lastSegment='true' or @lastSegment='1']",
 			this.doc as unknown as Node,
 		) as unknown as unknown[];
 
 		return !!node.length;
 	},
 
+	/** Total number of order data segments, announced in the initialisation answer; 0 when absent. */
+	numSegments() {
+		const select = xpath.useNamespaces({ xmlns: 'urn:org:ebics:H005' });
+		const node = select(
+			'//xmlns:header/xmlns:static/xmlns:NumSegments',
+			this.doc as unknown as Node,
+		) as unknown as any[];
+
+		return node.length ? Number(node[0].textContent) : 0;
+	},
+
+	/** Number of the segment this answer carries; 0 when absent. */
+	segmentNumber() {
+		const select = xpath.useNamespaces({ xmlns: 'urn:org:ebics:H005' });
+		const node = select(
+			'//xmlns:header/xmlns:mutable/xmlns:SegmentNumber',
+			this.doc as unknown as Node,
+		) as unknown as any[];
+
+		return node.length ? Number(node[0].textContent) : 0;
+	},
+
+	/** The still encrypted, base64-encoded order data segment of this answer; `''` when absent. */
+	orderDataSegment(): string {
+		const orderDataNode = this.doc.getElementsByTagNameNS(
+			'urn:org:ebics:H005',
+			'OrderData',
+		);
+
+		return orderDataNode.length ? (orderDataNode[0]!.textContent ?? '') : '';
+	},
+
+	/** Decrypted order data of this single answer (key management, single-segment downloads). */
 	orderData() {
 		const orderDataNode = this.doc.getElementsByTagNameNS(
 			'urn:org:ebics:H005',
@@ -50,17 +81,7 @@ const responseFactory = (xml: string, keys: Keys) => ({
 
 		if (!orderDataNode.length) return Buffer.alloc(0);
 
-		const orderData = orderDataNode[0]!.textContent;
-		const decipher = crypto
-			.createDecipheriv('aes-128-cbc', this.transactionKey(), DEFAULT_IV)
-			.setAutoPadding(false);
-		const data = Buffer.from(
-			decipher.update(orderData as string, 'base64', 'binary')
-				+ decipher.final('binary'),
-			'binary',
-		);
-
-		return zlib.inflateSync(data);
+		return decryptOrderData(this.orderDataSegment(), this.transactionKey());
 	},
 
 	transactionKey() {

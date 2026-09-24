@@ -1,21 +1,20 @@
-import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 
 import js2xmlparser from 'js2xmlparser';
 
 import Crypto from '../../../crypto/Crypto.js';
 import { isFollowUpPhase } from '../../phase.js';
+import { attachUploadTransaction, encryptOrderData, normalizeDocument, prepareUploadTransaction } from '../../orderData.js';
 
 import downloadSerializer from './download.js';
+import genericSerializer from './generic.js';
 
-const transKey = crypto.randomBytes(16);
-
-const signatureValue = (document: string, key: any) => {
-	const digested = Crypto.digestWithHash(document.replace(/\n|\r/g, ''));
+const signatureValue = (document: string | Buffer, key: any) => {
+	const digested = Crypto.digestWithHash(document);
 
 	return Crypto.sign(key, digested);
 };
-const orderSignature = (ebicsAccount: any, document: string, key: any, xmlOptions: any) => {
+const orderSignature = (ebicsAccount: any, document: string | Buffer, key: any, xmlOptions: any) => {
 	const xmlObj = {
 		'@': {
 			xmlns: 'http://www.ebics.org/S002',
@@ -32,46 +31,48 @@ const orderSignature = (ebicsAccount: any, document: string, key: any, xmlOption
 
 	return js2xmlparser.parse('UserSignatureData', xmlObj, xmlOptions);
 };
-const encryptedOrderSignature = (ebicsAccount: any, document: string, transactionKey: Buffer, key: any, xmlOptions: any) => {
-	const dst = zlib.deflateSync(orderSignature(ebicsAccount, document, key, xmlOptions));
-	const cipher = crypto.createCipheriv('aes-128-cbc', transactionKey, Buffer.from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])).setAutoPadding(false);
 
-	return Buffer.concat([cipher.update(Crypto.pad(dst)), cipher.final()]).toString('base64');
-};
-const encryptedOrderData = (document: string, transactionKey: Buffer) => {
-	const dst = zlib.deflateSync(document.replace(/\n|\r/g, ''));
-	const cipher = crypto.createCipheriv('aes-128-cbc', transactionKey, Buffer.from([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])).setAutoPadding(false);
+/**
+ * The transaction key and encrypted segments live on the order, so the initialisation and every
+ * transfer of ONE transaction share them. The client prepares a fresh set for each upload; a caller
+ * driving the serializer directly gets one prepared by the initialisation. A transfer never makes up
+ * a key of its own: the bank only knows the one sent with the initialisation.
+ */
+const uploadTransaction = (order: any, client: any) => {
+	if (!order.transactionKey || !order.segments) {
+		if (isFollowUpPhase(order))
+			throw new Error('Cannot build an upload transfer without the transaction key of its initialisation');
 
-	return Buffer.concat([cipher.update(Crypto.pad(dst)), cipher.final()]).toString('base64');
+		attachUploadTransaction(order, prepareUploadTransaction(order.document, client.segmentSize));
+	}
+
+	return { transactionKey: order.transactionKey as Buffer, segments: order.segments as string[] };
 };
 
 export default {
-	rootName: '' as string,
-	xmlOptions: undefined as any,
-	xmlSchema: undefined as any,
-	transfer: undefined as any,
-
 	async use(order: any, client: any): Promise<any> {
+		const { transactionKey, segments } = uploadTransaction(order, client);
+
+		if (isFollowUpPhase(order)) {
+			const number: number = order.segmentNumber ?? 1;
+			const segment = segments[number - 1];
+			if (segment === undefined)
+				throw new Error(`Upload has ${segments.length} segment(s), cannot transfer segment ${number}`);
+
+			return genericSerializer(client.hostId, order.transactionId).transfer(segment, number, number === segments.length);
+		}
+
 		const keys = await client.keys();
 		const ebicsAccount = {
 			partnerId: client.partnerId,
 			userId: client.userId,
 			hostId: client.hostId,
 		};
-		const { document } = order;
-		const {
-			rootName, xmlOptions, xmlSchema, transfer,
-		} = await downloadSerializer.use(order, client);
+		const normalizedDocument = normalizeDocument(order.document);
+		const builder = await downloadSerializer.use(order, client);
 
-		this.rootName = rootName;
-		this.xmlOptions = xmlOptions;
-		this.xmlSchema = xmlSchema;
-		this.transfer = transfer;
-
-		if (isFollowUpPhase(order)) return this.transfer(encryptedOrderData(document, transKey));
-
-		this.xmlSchema.header.static.NumSegments = 1;
-		this.xmlSchema.body = {
+		builder.xmlSchema.header.static.NumSegments = segments.length;
+		builder.xmlSchema.body = {
 			DataTransfer: {
 				DataEncryptionInfo: {
 					'@': { authenticate: true },
@@ -79,25 +80,21 @@ export default {
 						'@': { Version: 'E002', Algorithm: 'http://www.w3.org/2001/04/xmlenc#sha256' },
 						'#': Crypto.digestPublicKey(keys.bankE()!),
 					},
-					TransactionKey: Crypto.publicEncrypt(keys.bankE()!, transKey).toString('base64'),
+					TransactionKey: Crypto.publicEncrypt(keys.bankE()!, transactionKey).toString('base64'),
 				},
 				SignatureData: {
 					'@': { authenticate: true },
-					'#': encryptedOrderSignature(ebicsAccount, document, transKey, keys.a(), this.xmlOptions),
+					'#': encryptOrderData(orderSignature(ebicsAccount, normalizedDocument, keys.a(), builder.xmlOptions), transactionKey),
 				},
 				DataDigest: {
 					'@': {
 						SignatureVersion: 'A006',
 					},
-					'#': crypto.createHash('sha256').update(document.replace(/\n|\r/g, '')).digest('base64').trim(),
+					'#': crypto.createHash('sha256').update(normalizedDocument).digest('base64').trim(),
 				},
 			},
 		};
 
-		return this;
-	},
-
-	toXML() {
-		return js2xmlparser.parse(this.rootName, this.xmlSchema, this.xmlOptions);
+		return builder;
 	},
 };

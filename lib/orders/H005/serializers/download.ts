@@ -1,39 +1,27 @@
-import js2xmlparser from 'js2xmlparser';
-
 import Crypto from '../../../crypto/Crypto.js';
 import { isFollowUpPhase } from '../../phase.js';
 import genericSerializer from './generic.js';
 
 export default {
-	productString: '' as string,
-	rootName: '' as string,
-	xmlOptions: undefined as any,
-	xmlSchema: undefined as any,
-	receipt: undefined as any,
-	transfer: undefined as any,
-
 	async use(order: any, client: any): Promise<any> {
+		const { orderDetails, transactionId } = order;
+		const builder = genericSerializer(client.hostId, transactionId);
+
+		if (isFollowUpPhase(order)) {
+			if (order.phase === 'transfer')
+				return builder.downloadTransfer(order.segmentNumber, !!order.lastSegment);
+
+			return builder.receipt(order.receiptCode ?? 0);
+		}
+
 		const keys = await client.keys();
 		const ebicsAccount = {
 			partnerId: client.partnerId,
 			userId: client.userId,
 			hostId: client.hostId,
 		};
-		const { orderDetails, transactionId } = order;
-		const {
-			rootName, xmlOptions, xmlSchema, receipt, transfer, productString,
-		} = genericSerializer(client.hostId, transactionId);
 
-		this.productString = productString;
-		this.rootName = rootName;
-		this.xmlOptions = xmlOptions;
-		this.xmlSchema = xmlSchema;
-		this.receipt = receipt;
-		this.transfer = transfer;
-
-		if (isFollowUpPhase(order)) return this.receipt();
-
-		this.xmlSchema.header = {
+		builder.xmlSchema.header = {
 			'@': { authenticate: true },
 			static: {
 				HostID: ebicsAccount.hostId,
@@ -43,7 +31,7 @@ export default {
 				UserID: ebicsAccount.userId,
 				Product: {
 					'@': { Language: 'en' },
-					'#': productString,
+					'#': builder.productString,
 				},
 				OrderDetails: orderDetails,
 				BankPubKeyDigests: {
@@ -63,10 +51,6 @@ export default {
 			},
 		};
 
-		return this;
-	},
-
-	toXML() {
-		return js2xmlparser.parse(this.rootName, this.xmlSchema, this.xmlOptions);
+		return builder;
 	},
 };

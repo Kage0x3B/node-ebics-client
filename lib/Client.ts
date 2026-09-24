@@ -1,6 +1,6 @@
-import rock from 'rock-req';
-import type { Agent as HttpAgent } from 'node:http';
-import type { Agent as HttpsAgent } from 'node:https';
+import http, { type Agent as HttpAgent, type IncomingMessage } from 'node:http';
+import https, { type Agent as HttpsAgent } from 'node:https';
+import zlib from 'node:zlib';
 
 import constants from './consts.js';
 import Keys from './keymanagers/Keys.js';
@@ -13,9 +13,32 @@ import signer from './middleware/signer.js';
 import serializer from './middleware/serializer.js';
 import response from './middleware/response.js';
 import { assertEbicsResponse, assertReturnCodes } from './middleware/responseValidator.js';
-import EbicsClientError, { EbicsClientErrorCode, type EbicsTransactionPhase } from './EbicsClientError.js';
+import EbicsClientError, { EbicsClientErrorCode, type EbicsClientErrorDetails, type EbicsTransactionPhase } from './EbicsClientError.js';
+import { MAX_SEGMENT_SIZE, assertSegmentSize, attachUploadTransaction, decryptOrderData, prepareUploadTransaction } from './orders/orderData.js';
 
 const EBICS_OK = '000000';
+const RECEIPT_CONFIRMED = new Set(['011000', EBICS_OK]);
+
+/** Default time to wait for the bank's answer to one EBICS request. */
+export const DEFAULT_TIMEOUT = 60_000;
+
+/** Upper bound for a download whose initialisation does not announce NumSegments (10 GB at 1 MB per segment). */
+const MAX_DOWNLOAD_SEGMENTS = 10_000;
+
+/** Largest delay `setTimeout` accepts; longer ones fire immediately. */
+const MAX_TIMEOUT = 2 ** 31 - 1;
+
+/**
+ * Every EBICS request is one isolated HTTP exchange:
+ * - no retries: a retry would replay the identical request (same Nonce, same TransactionID) — the
+ *   bank either rejects it as a replay or, after a lost answer, sees a transfer for a closed transaction;
+ * - no redirects: following one would change or drop the POST; a 3xx is reported as HTTP_STATUS;
+ * - no keep-alive: banks and WAFs drop idle connections, and reusing such a socket fails with ECONNRESET.
+ */
+const isolatedAgents = {
+	'http:': new http.Agent({ keepAlive: false }),
+	'https:': new https.Agent({ keepAlive: false }),
+};
 
 export interface ClientOptions {
 	url: string;
@@ -30,7 +53,21 @@ export interface ClientOptions {
 	bankShortName?: string;
 	languageCode?: string;
 	storageLocation?: string;
+	/**
+	 * HTTP(S) agent for the requests to the bank. Defaults to an agent without keep-alive, so every
+	 * request opens a fresh connection. It must match the protocol of `url`.
+	 */
 	agent?: HttpAgent | HttpsAgent;
+	/**
+	 * Milliseconds to wait for the bank's complete answer to one request before failing with
+	 * `EBICS_CLIENT_TIMEOUT`. Defaults to 60 000; `0` disables the timeout; at most 2^31 - 1.
+	 */
+	timeout?: number;
+	/**
+	 * Maximum size in bytes of one upload order data segment (base64-encoded). Defaults to and may
+	 * not exceed 1 MB, the EBICS limit; must be a multiple of 4.
+	 */
+	segmentSize?: number;
 }
 
 export interface BankKeyEntry {
@@ -62,7 +99,15 @@ export interface EbicsBaseResponse {
 	businessCodeMeaning: string;
 }
 
-export type EbicsUploadResponse = EbicsBaseResponse;
+export interface EbicsUploadResponse extends EbicsBaseResponse {
+	/** Number of segments the order data was split into. */
+	numSegments?: number;
+	/**
+	 * The last segment sent. When the bank rejects a transfer, this is the rejected segment and
+	 * `phase` is `'transfer'`; the segments after it were not sent.
+	 */
+	segmentNumber?: number;
+}
 
 export interface EbicsKeyManagementResponse extends EbicsBaseResponse {
 	orderData: string;
@@ -71,6 +116,10 @@ export interface EbicsKeyManagementResponse extends EbicsBaseResponse {
 
 export interface EbicsDownloadResponse extends EbicsBaseResponse {
 	orderData: Buffer;
+	/** Number of segments the order data was delivered in. */
+	numSegments?: number;
+	/** When the bank rejects a transfer, the segment it rejected; `phase` is then `'transfer'` and `orderData` is empty. */
+	segmentNumber?: number;
 }
 
 interface OrderLike {
@@ -82,6 +131,17 @@ interface OrderLike {
 	phase?: EbicsTransactionPhase;
 	document?: string | Buffer;
 	needsExistingKeys?: boolean;
+	/** Segment of a transfer request (1-based), set by the client. */
+	segmentNumber?: number;
+	/** Whether a download transfer request asks for the last segment. */
+	lastSegment?: boolean;
+	/** Total segments of the transaction, set by the client (error context). */
+	numSegments?: number;
+	/** ReceiptCode of a download receipt: 0 = received fine, 1 = deliver again. */
+	receiptCode?: 0 | 1;
+	/** Upload only: the transaction key and encrypted segments of the transaction in progress. */
+	transactionKey?: Buffer;
+	segments?: string[];
 	[k: string]: unknown;
 }
 
@@ -91,6 +151,48 @@ const orderTypeOf = (order: OrderLike): string =>
 /** Both return codes report success — the bank accepted this step. */
 const isAccepted = (res: { technicalCode(): string; businessCode(): string }): boolean =>
 	res.technicalCode() === EBICS_OK && res.businessCode() === EBICS_OK;
+
+/** Undo a content encoding a server applied although none was requested. */
+const decodeBody = (data: Buffer, encoding: string | undefined): Buffer => {
+	switch (encoding?.toLowerCase()) {
+		case 'gzip': return zlib.gunzipSync(data);
+		case 'deflate': return zlib.inflateSync(data);
+		case 'br': return zlib.brotliDecompressSync(data);
+		default: return data;
+	}
+};
+
+/** The bank's verdict on one step, in the shape of the public result objects. */
+const verdictOf = (res: any, phase: EbicsTransactionPhase): Omit<EbicsBaseResponse, 'transactionId'> => {
+	const technicalCode: string = res.technicalCode();
+	const businessCode: string = res.businessCode();
+
+	return {
+		orderId: res.orderId(),
+		phase,
+
+		technicalCode,
+		technicalCodeSymbol: res.technicalSymbol(),
+		technicalCodeShortText: res.technicalShortText(technicalCode),
+		technicalCodeMeaning: res.technicalMeaning(technicalCode),
+
+		businessCode,
+		businessCodeSymbol: res.businessSymbol(businessCode),
+		businessCodeShortText: res.businessShortText(businessCode),
+		businessCodeMeaning: res.businessMeaning(businessCode),
+	};
+};
+
+/** Forget the state of an earlier transaction run with the same order object. */
+const resetTransactionState = (order: OrderLike): void => {
+	delete order.transactionId;
+	delete order.segmentNumber;
+	delete order.lastSegment;
+	delete order.numSegments;
+	delete order.receiptCode;
+	delete order.transactionKey;
+	delete order.segments;
+};
 
 const stringifyKeys = (keys: Record<string, unknown>): string => {
 	Object.keys(keys).map((key) => {
@@ -114,6 +216,8 @@ export default class Client {
 	languageCode: string;
 	storageLocation: string | null;
 	agent: HttpAgent | HttpsAgent | undefined;
+	timeout: number;
+	segmentSize: number;
 
 	constructor({
 		url,
@@ -129,6 +233,8 @@ export default class Client {
 		languageCode,
 		storageLocation,
 		agent,
+		timeout,
+		segmentSize,
 	}: ClientOptions) {
 		if (!url) throw new Error('EBICS URL is required');
 		if (!partnerId) throw new Error('partnerId is required');
@@ -143,6 +249,10 @@ export default class Client {
 		)
 			throw new Error('keyStorage implementation missing or wrong');
 
+		if (timeout !== undefined && (!Number.isFinite(timeout) || timeout < 0 || timeout > MAX_TIMEOUT))
+			throw new Error(`timeout must be between 0 and ${MAX_TIMEOUT} milliseconds, got ${timeout}`);
+		if (segmentSize !== undefined) assertSegmentSize(segmentSize);
+
 		this.url = url;
 		this.partnerId = partnerId;
 		this.userId = userId;
@@ -155,6 +265,8 @@ export default class Client {
 		this.languageCode = languageCode || 'en';
 		this.storageLocation = storageLocation || null;
 		this.agent = agent;
+		this.timeout = timeout ?? DEFAULT_TIMEOUT;
+		this.segmentSize = segmentSize ?? MAX_SEGMENT_SIZE;
 	}
 
 	async send(order: OrderLike): Promise<unknown> {
@@ -221,169 +333,363 @@ export default class Client {
 	async download(order: OrderLike): Promise<EbicsDownloadResponse> {
 		if (this.tracesStorage)
 			this.tracesStorage.new().ofType('ORDER.DOWNLOAD');
+		resetTransactionState(order);
 		order.phase = 'initialisation';
 		const res = await this.ebicsRequest(order);
 
 		const transactionId: string = res.transactionId();
-		// An accepted download always opens a transaction; without its ID no receipt can be sent.
-		if (isAccepted(res) && !transactionId)
-			throw this.missingTransactionId(order, res);
+		if (!isAccepted(res))
+			return { ...verdictOf(res, 'initialisation'), orderData: res.orderData(), transactionId };
 
+		// An accepted download always opens a transaction; without its ID no receipt can be sent.
+		if (!transactionId) throw this.missingTransactionId(order, res);
 		order.transactionId = transactionId;
 
-		if (res.isSegmented() && res.isLastSegment()) {
-			if (this.tracesStorage)
-				this.tracesStorage.connect().ofType('RECEIPT.ORDER.DOWNLOAD');
+		const numSegments: number = res.numSegments();
+		order.numSegments = numSegments || undefined;
+		const result = { ...verdictOf(res, 'initialisation'), transactionId };
 
-			order.phase = 'receipt';
-			const receipt = await this.ebicsRequest(order);
-			this.assertSameTransaction(order, receipt, transactionId);
+		// An answer without any segment information and without order data opens nothing to acknowledge.
+		if (!res.isSegmented() && !res.orderDataSegment())
+			return { ...result, numSegments: 1, orderData: res.orderData() };
+
+		let segments: string[];
+		try {
+			const collected = await this.downloadSegments(order, res, transactionId, numSegments);
+
+			// The bank rejected a segment. The transaction is left unacknowledged, so the order data
+			// stays available for a later download.
+			if (!Array.isArray(collected))
+				return {
+					...verdictOf(collected.response, 'transfer'),
+					orderData: Buffer.alloc(0),
+					transactionId,
+					numSegments: numSegments || undefined,
+					segmentNumber: collected.segmentNumber,
+				};
+
+			segments = collected;
+		} catch (error) {
+			// Order data whose segments do not add up is unusable: ask the bank to deliver it again.
+			if (error instanceof EbicsClientError && error.code === EbicsClientErrorCode.SEGMENT_MISMATCH)
+				error.redeliveryRequested = await this.requestRedelivery(order, transactionId);
+			throw error;
 		}
 
-		const returnedTechnicalCode = res.technicalCode();
-		const returnedBusinessCode = res.businessCode();
+		// Only confirm receipt of order data that could actually be read: a positive receipt marks
+		// the data as delivered, and the bank will not deliver it again.
+		let orderData: Buffer;
+		try {
+			orderData = decryptOrderData(segments, res.transactionKey());
+		} catch (error) {
+			const redeliveryRequested = await this.requestRedelivery(order, transactionId);
 
-		return {
-			orderData: res.orderData(),
-			transactionId,
-			orderId: res.orderId(),
-			phase: 'initialisation',
+			throw new EbicsClientError(
+				EbicsClientErrorCode.ORDER_DATA_UNREADABLE,
+				`Downloaded order data could not be decrypted or decompressed (${(error as Error)?.message ?? error}); ${redeliveryRequested
+					? 'the bank was asked to deliver it again'
+					: 'ReceiptCode 1 could not be sent, the transaction stays open until the bank times it out'}`,
+				{ ...this.errorContext(order), phase: 'transfer', segmentNumber: undefined, transactionId, redeliveryRequested, cause: error },
+			);
+		}
 
-			technicalCode: returnedTechnicalCode,
-			technicalCodeSymbol: res.technicalSymbol(),
-			technicalCodeShortText: res.technicalShortText(
-				returnedTechnicalCode,
-			),
-			technicalCodeMeaning: res.technicalMeaning(returnedTechnicalCode),
+		try {
+			await this.sendReceipt(order, transactionId, 0);
+		} catch (error) {
+			// The bank may have processed the receipt and will then not deliver the data again: hand
+			// the data to the caller together with the error instead of dropping it.
+			throw new EbicsClientError(
+				EbicsClientErrorCode.RECEIPT_FAILED,
+				`Order data was downloaded, but the receipt was not confirmed: ${(error as Error)?.message ?? error}`,
+				{
+					...this.errorContext(order),
+					phase: 'receipt',
+					transactionId,
+					technicalCode: (error as EbicsClientError)?.technicalCode,
+					businessCode: (error as EbicsClientError)?.businessCode,
+					rawResponse: (error as EbicsClientError)?.rawResponse,
+					requestSent: (error as EbicsClientError)?.requestSent,
+					orderData,
+					cause: error,
+				},
+			);
+		}
 
-			businessCode: returnedBusinessCode,
-			businessCodeSymbol: res.businessSymbol(returnedBusinessCode),
-			businessCodeShortText: res.businessShortText(returnedBusinessCode),
-			businessCodeMeaning: res.businessMeaning(returnedBusinessCode),
-		};
+		return { ...result, numSegments: segments.length, orderData };
+	}
+
+	/**
+	 * Collect the encrypted order data segments of a download, starting with the one in the
+	 * initialisation answer. Returns the bank's answer instead when it rejects a transfer.
+	 */
+	private async downloadSegments(
+		order: OrderLike,
+		init: any,
+		transactionId: string,
+		numSegments: number,
+	): Promise<string[] | { response: any; segmentNumber: number }> {
+		const segments: string[] = [init.orderDataSegment()];
+		let lastSegment: boolean = !init.isSegmented() || init.isLastSegment();
+		this.assertSegmentNumber(order, init, 1);
+
+		while (!lastSegment) {
+			const segmentNumber = segments.length + 1;
+			if (segmentNumber > (numSegments || MAX_DOWNLOAD_SEGMENTS))
+				throw this.segmentMismatch(order, init, `Bank announced ${numSegments || 'no'} segment(s) but keeps sending more`, segmentNumber);
+
+			if (this.tracesStorage)
+				this.tracesStorage.connect().ofType('TRANSFER.ORDER.DOWNLOAD');
+			order.phase = 'transfer';
+			order.segmentNumber = segmentNumber;
+			order.lastSegment = numSegments > 0 && segmentNumber === numSegments;
+			const transfer = await this.ebicsRequest(order);
+			this.assertSameTransaction(order, transfer, transactionId);
+
+			if (!isAccepted(transfer)) return { response: transfer, segmentNumber };
+
+			this.assertSegmentNumber(order, transfer, segmentNumber);
+			segments.push(transfer.orderDataSegment());
+			lastSegment = transfer.isLastSegment();
+		}
+
+		if (numSegments && segments.length !== numSegments)
+			throw this.segmentMismatch(order, init, `Bank announced ${numSegments} segment(s) but delivered ${segments.length}`, segments.length);
+
+		return segments;
 	}
 
 	async upload(order: OrderLike): Promise<EbicsUploadResponse & { 0: string; 1: string; [Symbol.iterator](): Generator<string> }> {
 		if (this.tracesStorage) this.tracesStorage.new().ofType('ORDER.UPLOAD');
-		order.phase = 'initialisation';
-		let res = await this.ebicsRequest(order);
-		const transactionId: string = res.transactionId();
-		const orderId: string = res.orderId();
-		let phase: EbicsTransactionPhase = 'initialisation';
+		resetTransactionState(order);
+		// A fresh transaction key for every upload: EBICS encrypts with a fixed zero IV, so a reused
+		// key would encrypt equal leading bytes of two orders to equal ciphertext.
+		attachUploadTransaction(order, prepareUploadTransaction(order.document, this.segmentSize));
+		const numSegments = order.segments!.length;
+		order.numSegments = numSegments;
 
-		if (isAccepted(res)) {
-			// Without a TransactionID the order data cannot be transferred — the bank would never
-			// see the order, however "successful" the initialisation looked.
-			if (!transactionId) throw this.missingTransactionId(order, res);
+		try {
+			order.phase = 'initialisation';
+			let res = await this.ebicsRequest(order);
+			const transactionId: string = res.transactionId();
+			const orderId: string = res.orderId();
+			let phase: EbicsTransactionPhase = 'initialisation';
+			let segmentNumber: number | undefined;
 
-			order.transactionId = transactionId;
-			order.phase = 'transfer';
-			phase = 'transfer';
+			if (isAccepted(res)) {
+				// Without a TransactionID the order data cannot be transferred — the bank would never
+				// see the order, however "successful" the initialisation looked.
+				if (!transactionId) throw this.missingTransactionId(order, res);
 
-			if (this.tracesStorage)
-				this.tracesStorage.connect().ofType('TRANSFER.ORDER.UPLOAD');
-			res = await this.ebicsRequest(order);
-			this.assertSameTransaction(order, res, transactionId);
+				order.transactionId = transactionId;
+				order.phase = 'transfer';
+				phase = 'transfer';
+
+				for (segmentNumber = 1; segmentNumber <= numSegments; segmentNumber++) {
+					order.segmentNumber = segmentNumber;
+					if (this.tracesStorage)
+						this.tracesStorage.connect().ofType('TRANSFER.ORDER.UPLOAD');
+					res = await this.ebicsRequest(order);
+					this.assertSameTransaction(order, res, transactionId);
+
+					// The bank rejected this segment — report its verdict, send nothing more.
+					if (!isAccepted(res)) break;
+				}
+				segmentNumber = Math.min(segmentNumber, numSegments);
+			}
+			// else: the bank rejected the initialisation — report that verdict, transfer nothing.
+
+			return {
+				...verdictOf(res, phase),
+				transactionId: transactionId || undefined,
+				orderId,
+				numSegments,
+				segmentNumber,
+
+				// for backwards compatibility with the earlier return value [transactionId, orderId]:
+				0: transactionId,
+				1: orderId,
+				[Symbol.iterator]: function* iterator() {
+					yield transactionId;
+					yield orderId;
+				},
+			};
+		} finally {
+			// The key has served its one transaction; do not keep it around on the caller's object.
+			delete order.transactionKey;
+			delete order.segments;
 		}
-		// else: the bank rejected the initialisation — report that verdict, transfer nothing.
-
-		const returnedTechnicalCode = res.technicalCode();
-		const returnedBusinessCode = res.businessCode();
-
-		return {
-			transactionId: transactionId || undefined,
-			orderId,
-			phase,
-
-			technicalCode: returnedTechnicalCode,
-			technicalCodeSymbol: res.technicalSymbol(),
-			technicalCodeShortText: res.technicalShortText(
-				returnedTechnicalCode,
-			),
-			technicalCodeMeaning: res.technicalMeaning(returnedTechnicalCode),
-
-			businessCode: returnedBusinessCode,
-			businessCodeSymbol: res.businessSymbol(returnedBusinessCode),
-			businessCodeShortText: res.businessShortText(returnedBusinessCode),
-			businessCodeMeaning: res.businessMeaning(returnedBusinessCode),
-
-			// for backwards compatibility with the earlier return value [transactionId, orderId]:
-			0: transactionId,
-			1: orderId,
-			[Symbol.iterator]: function* iterator() {
-				yield transactionId;
-				yield orderId;
-			},
-		};
 	}
 
 	produceOrderXml(order: OrderLike): Promise<string> {
 		return Promise.resolve(serializer.use(order, this)).then(serializedOrder => (serializedOrder as { toXML: () => string }).toXML());
 	}
 
-	ebicsRequest(order: OrderLike): Promise<any> {
-		// eslint-disable-next-line no-async-promise-executor
-		return new Promise(async (resolve, reject) => {
-			try {
-				const { version } = order;
-				const keys = await this.keys();
-				const unsignedXml = await this.produceOrderXml(order);
-				const signedXml = signer
-					.version(version)
-					.sign(unsignedXml, keys!.x()!);
+	async ebicsRequest(order: OrderLike): Promise<any> {
+		const { version } = order;
+		const keys = await this.keys();
+		const unsignedXml = await this.produceOrderXml(order);
+		const signedXml = signer
+			.version(version)
+			.sign(unsignedXml, keys!.x()!);
 
-				if (this.tracesStorage)
-					this.tracesStorage
-						.label(`REQUEST.${orderTypeOf(order)}`)
-						.data(signedXml)
-						.persist();
+		if (this.tracesStorage)
+			this.tracesStorage
+				.label(`REQUEST.${orderTypeOf(order)}`)
+				.data(signedXml)
+				.persist();
 
-				rock({
-					method: 'POST',
-					url: this.url,
-					body: signedXml,
-					headers: { 'content-type': 'text/xml;charset=UTF-8' },
-					agent: this.agent,
-				},
-				(err, res, data) => {
-					if (err) {
-						reject(err);
-						return;
-					}
+		const { res, data } = await this.post(signedXml, order);
+		const raw = {
+			body: data ? data.toString('utf-8') : '',
+			httpStatus: res?.statusCode,
+			contentType: res?.headers?.['content-type'],
+		};
+		const context = this.errorContext(order);
 
-					try {
-						const raw = {
-							body: data ? data.toString('utf-8') : '',
-							httpStatus: res?.statusCode,
-							contentType: res?.headers?.['content-type'],
-						};
-						const context = { phase: order.phase, orderType: orderTypeOf(order) };
+		// Persist the RAW body (not a re-serialisation) before validating it, so a
+		// rejected response — an HTML error page, an empty body — is still on record.
+		if (this.tracesStorage)
+			this.tracesStorage
+				.label(`RESPONSE.${orderTypeOf(order)}`)
+				.connect()
+				.data(raw.body || `<!-- empty response body (HTTP ${raw.httpStatus ?? 'unknown'}) -->`)
+				.persist();
 
-						// Persist the RAW body (not a re-serialisation) before validating it, so a
-						// rejected response — an HTML error page, an empty body — is still on record.
-						if (this.tracesStorage)
-							this.tracesStorage
-								.label(`RESPONSE.${orderTypeOf(order)}`)
-								.connect()
-								.data(raw.body || `<!-- empty response body (HTTP ${raw.httpStatus ?? 'unknown'}) -->`)
-								.persist();
+		assertEbicsResponse(version, raw, context);
+		const ebicsResponse = response.version(version)(raw.body, keys!);
+		assertReturnCodes(
+			{ technicalCode: ebicsResponse.technicalCode(), businessCode: ebicsResponse.businessCode() },
+			raw,
+			context,
+		);
 
-						assertEbicsResponse(version, raw, context);
-						const ebicsResponse = response.version(version)(raw.body, keys!);
-						assertReturnCodes(
-							{ technicalCode: ebicsResponse.technicalCode(), businessCode: ebicsResponse.businessCode() },
-							raw,
-							context,
-						);
+		return ebicsResponse;
+	}
 
-						resolve(ebicsResponse);
-					} catch (validationError) {
-						reject(validationError as Error);
-					}
-				});
-			} catch (err) {
-				reject(err as Error);
+	/** One HTTP POST to the bank, bounded by {@link timeout}. */
+	private post(body: string, order: OrderLike): Promise<{ res: { statusCode?: number; headers?: { 'content-type'?: string } }; data: Buffer }> {
+		return new Promise((resolve, reject) => {
+			const url = new URL(this.url);
+			const transport = url.protocol === 'https:' ? https : url.protocol === 'http:' ? http : undefined;
+			if (!transport) {
+				reject(new Error(`Unsupported protocol ${url.protocol} in EBICS URL`));
+				return;
 			}
+
+			let timer: NodeJS.Timeout | undefined;
+			let settled = false;
+			const settle = (outcome: () => void) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				outcome();
+			};
+
+			const req = transport.request(url, {
+				method: 'POST',
+				agent: this.agent ?? isolatedAgents[url.protocol as keyof typeof isolatedAgents],
+				headers: {
+					'content-type': 'text/xml;charset=UTF-8',
+					'content-length': Buffer.byteLength(body),
+				},
+			}, (res: IncomingMessage) => {
+				const chunks: Buffer[] = [];
+				res.on('data', (chunk: Buffer) => chunks.push(chunk));
+				res.on('error', error => settle(() => reject(error)));
+				res.on('close', () => {
+					if (!res.complete) settle(() => reject(new Error('Connection closed before the response was complete')));
+				});
+				res.on('end', () => settle(() => {
+					try {
+						resolve({
+							res: { statusCode: res.statusCode, headers: { 'content-type': res.headers['content-type'] } },
+							data: decodeBody(Buffer.concat(chunks), res.headers['content-encoding']),
+						});
+					} catch (error) {
+						reject(error as Error);
+					}
+				}));
+			});
+
+			req.on('error', error => settle(() => reject(error)));
+
+			if (this.timeout > 0)
+				timer = setTimeout(() => settle(() => {
+					// `writableFinished`: the whole body was handed to the operating system.
+					const requestSent = req.writableFinished;
+					req.destroy();
+
+					const outcome = requestSent && order.phase !== 'initialisation'
+						? 'the request was sent completely, so the bank may have processed it — the outcome is unknown'
+						: requestSent ? 'the request was sent completely' : 'the request was not sent completely';
+					reject(new EbicsClientError(
+						EbicsClientErrorCode.TIMEOUT,
+						`No answer from the bank within ${this.timeout} ms; ${outcome}`,
+						{ ...this.errorContext(order), transactionId: order.transactionId, requestSent },
+					));
+				}), this.timeout);
+
+			req.end(body);
+		});
+	}
+
+	/** Where in the transaction a request sits, for error reports. */
+	private errorContext(order: OrderLike): Pick<EbicsClientErrorDetails, 'phase' | 'orderType' | 'segmentNumber' | 'numSegments'> {
+		return {
+			phase: order.phase,
+			orderType: orderTypeOf(order),
+			segmentNumber: order.phase === 'transfer' ? order.segmentNumber : undefined,
+			numSegments: order.numSegments,
+		};
+	}
+
+	/** Acknowledge a download: ReceiptCode 0 confirms receipt, 1 asks the bank to deliver the data again. */
+	private async sendReceipt(order: OrderLike, transactionId: string, receiptCode: 0 | 1): Promise<void> {
+		if (this.tracesStorage)
+			this.tracesStorage.connect().ofType('RECEIPT.ORDER.DOWNLOAD');
+
+		order.phase = 'receipt';
+		order.receiptCode = receiptCode;
+		const receipt = await this.ebicsRequest(order);
+		this.assertSameTransaction(order, receipt, transactionId);
+
+		// A confirmed receipt is answered with 011000 EBICS_DOWNLOAD_POSTPROCESS_DONE (some banks send 000000).
+		if (receiptCode === 0 && (!RECEIPT_CONFIRMED.has(receipt.technicalCode()) || receipt.businessCode() !== EBICS_OK))
+			throw new EbicsClientError(EbicsClientErrorCode.RECEIPT_FAILED, 'Bank did not confirm the receipt', {
+				...this.errorContext(order),
+				technicalCode: receipt.technicalCode(),
+				businessCode: receipt.businessCode(),
+				transactionId,
+				rawResponse: receipt.toXML(),
+			});
+	}
+
+	/** Best effort: answer ReceiptCode 1 so the bank delivers the order data again. Whether it went through. */
+	private async requestRedelivery(order: OrderLike, transactionId: string): Promise<boolean> {
+		try {
+			await this.sendReceipt(order, transactionId, 1);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** A segment answer that names its number must name the segment requested. */
+	private assertSegmentNumber(order: OrderLike, res: any, expected: number): void {
+		const returned: number = res.segmentNumber();
+		if (!returned || returned === expected) return;
+
+		throw this.segmentMismatch(order, res, `Expected segment ${expected}, response carries segment ${returned}`, expected);
+	}
+
+	private segmentMismatch(order: OrderLike, res: any, message: string, segmentNumber: number): EbicsClientError {
+		return new EbicsClientError(EbicsClientErrorCode.SEGMENT_MISMATCH, message, {
+			...this.errorContext(order),
+			segmentNumber,
+			technicalCode: res.technicalCode(),
+			businessCode: res.businessCode(),
+			transactionId: order.transactionId,
+			rawResponse: res.toXML(),
 		});
 	}
 
@@ -410,8 +716,7 @@ export default class Client {
 			EbicsClientErrorCode.TRANSACTION_ID_MISMATCH,
 			`Expected TransactionID ${transactionId}, response names ${returned}`,
 			{
-				phase: order.phase,
-				orderType: orderTypeOf(order),
+				...this.errorContext(order),
 				technicalCode: res.technicalCode(),
 				businessCode: res.businessCode(),
 				transactionId,

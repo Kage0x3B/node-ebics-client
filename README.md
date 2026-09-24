@@ -41,12 +41,26 @@ For examples on how to use this library, take a look at the [examples](https://g
 
 If all these steps were executed successfully, you can now do all things EBICS, like fetching bank statements by running `pnpm tsx examples/send-sta-order.ts <environment> <bank> [entity]`, or actually use this library in your custom banking applications.
 
+### Transport and large orders
+
+Every EBICS request is one isolated HTTP exchange: the client never retries a request (a retry would replay the same Nonce and TransactionID), never follows redirects (a `3xx` is reported as `EBICS_CLIENT_HTTP_STATUS`) and does not keep idle connections alive. Retry at the application level with a new `client.send()`.
+
+> **Behaviour change in 6.0.0:** earlier versions retried once on HTTP 408/429/502/503/504/521/522/524, followed redirects, reused keep-alive connections and had no timeout. A custom `agent` whose protocol does not match `url` used to be replaced silently by a built-in keep-alive agent; it is now rejected (`ERR_INVALID_PROTOCOL`).
+
+| Client option | Default | Meaning |
+|---|---|---|
+| `timeout` | `60000` | Milliseconds to wait for the answer to one request; `0` disables it |
+| `agent` | agent without keep-alive | Custom `http.Agent` / `https.Agent` matching the protocol of `url` |
+| `segmentSize` | `1048576` (1 MB) | Maximum size of one upload order data segment (base64); a multiple of 4, at most 1 MB |
+
+Order data larger than one segment is split and transferred segment by segment, in both directions. A download is acknowledged with `ReceiptCode 0` only after all its segments were decrypted and decompressed. If the data is unreadable or its segments do not add up, the client answers `ReceiptCode 1` so the bank delivers the data again (`error.redeliveryRequested` tells whether that went through). If the exchange breaks or the bank rejects a segment, no receipt is sent; the transaction times out at the bank and the data stays available.
+
 ### Error handling
 
 `client.send()` distinguishes two kinds of failure:
 
-- **Bank verdicts** — a well-formed EBICS response carrying a non-`000000` return code (e.g. `091005`, `090005`) is **returned** as a normal result. Check `technicalCode` / `businessCode`. For uploads, `phase` tells you whether the bank rejected the initialisation (`'initialisation'`, no order data was transferred) or the transfer (`'transfer'`).
-- **Broken exchanges** — anything that is not a valid EBICS answer **throws** an `EbicsClientError` with a string `code` (never a six-digit EBICS code), plus `phase`, `orderType`, `httpStatus`, `contentType` and the (truncated) `rawResponse`:
+- **Bank verdicts** — a well-formed EBICS response carrying a non-`000000` return code (e.g. `091005`, `090005`) is **returned** as a normal result. Check `technicalCode` / `businessCode`. For uploads, `phase` tells you whether the bank rejected the initialisation (`'initialisation'`, no order data was transferred) or the transfer (`'transfer'`); for a segmented transfer, `segmentNumber` / `numSegments` name the rejected segment (later segments were not sent). A download whose transfer the bank rejects comes back with `phase: 'transfer'`, the rejected `segmentNumber` and an empty `orderData`; no receipt is sent, so the data stays available.
+- **Broken exchanges** — anything that is not a valid EBICS answer **throws** an `EbicsClientError` with a string `code` (never a six-digit EBICS code), plus `phase`, `orderType`, `httpStatus`, `contentType`, the (truncated) `rawResponse`, in segmented transfers `segmentNumber` / `numSegments`, for timeouts `requestSent`, and the underlying error as `cause` where one exists:
 
 | `code` | Meaning |
 |---|---|
@@ -58,6 +72,12 @@ If all these steps were executed successfully, you can now do all things EBICS, 
 | `EBICS_CLIENT_MISSING_RETURN_CODE` | Mandatory header or body `ReturnCode` missing |
 | `EBICS_CLIENT_MISSING_TRANSACTION_ID` | Initialisation accepted without a `TransactionID` — the order data was **not** sent |
 | `EBICS_CLIENT_TRANSACTION_ID_MISMATCH` | A transfer/receipt answer names a different transaction |
+| `EBICS_CLIENT_TIMEOUT` | No answer within `timeout`. `requestSent` tells whether the request body was sent completely — after a sent transfer the outcome of the order is **unknown** |
+| `EBICS_CLIENT_ORDER_DATA_UNREADABLE` | Downloaded order data could not be decrypted or decompressed. The client sent `ReceiptCode 1`, so the bank delivers the data again (see `redeliveryRequested`) |
+| `EBICS_CLIENT_SEGMENT_MISMATCH` | Download segments out of order, or more/fewer than the bank announced. The client sent `ReceiptCode 1` |
+| `EBICS_CLIENT_RECEIPT_FAILED` | The download was read, but the positive receipt failed or the bank did not confirm it. The bank may already consider the data delivered, so the error carries it in `orderData` (not enumerable, so it is not logged with the error) — keep it |
+
+Transport errors of the HTTP layer itself (e.g. `ECONNRESET`, `ECONNREFUSED`) are thrown as they are.
 
 ```ts
 import { EbicsClientError, EbicsClientErrorCode } from '@kage0x3b/ebics-client';

@@ -1,3 +1,5 @@
+import js2xmlparser from 'js2xmlparser';
+
 import constants from '../../../consts.js';
 
 const rootName = 'ebicsRequest';
@@ -7,7 +9,6 @@ const rootAttributes = {
 	Version: 'H004',
 	Revision: '1',
 };
-const header = {};
 const authSignature = ({
 	'ds:SignedInfo': {
 		'ds:CanonicalizationMethod': {
@@ -43,7 +44,6 @@ const authSignature = ({
 	},
 	'ds:SignatureValue': {},
 });
-const body = {};
 
 const xmlOptions = {
 	declaration: {
@@ -58,39 +58,45 @@ const xmlOptions = {
 	},
 };
 
+const followUpHeader = (hostId: string, transactionId: string | undefined, mutable: Record<string, unknown>) => ({
+	'@': { authenticate: true },
+	static: {
+		HostID: hostId,
+		TransactionID: transactionId,
+	},
+	mutable,
+});
+
+const segmentNumber = (number: number, lastSegment: boolean) => ({
+	'@': { lastSegment },
+	'#': number,
+});
+
+/**
+ * A fresh request builder per call. Builders are never shared: concurrent EBICS requests in one
+ * process must not see each other's header or body.
+ */
 const genericFactory = (hostId: string, transactionId?: string): any => ({
-	// return {
 	productString: constants.productString,
 	rootName,
 	xmlOptions,
 	xmlSchema: {
 		'@': rootAttributes,
-		header,
+		header: {},
 		AuthSignature: authSignature,
-		body,
+		body: {},
 	},
 
-	receipt() {
+	/** Acknowledge a download. ReceiptCode 0 confirms receipt, 1 asks the bank to deliver again. */
+	receipt(receiptCode: 0 | 1 = 0) {
 		this.xmlSchema = {
 			'@': rootAttributes,
-
-			header: {
-				'@': { authenticate: true },
-				static: {
-					HostID: hostId,
-					TransactionID: transactionId,
-				},
-				mutable: {
-					TransactionPhase: 'Receipt',
-				},
-			},
-
+			header: followUpHeader(hostId, transactionId, { TransactionPhase: 'Receipt' }),
 			AuthSignature: authSignature,
-
 			body: {
 				TransferReceipt: {
 					'@': { authenticate: true },
-					ReceiptCode: 0,
+					ReceiptCode: receiptCode,
 				},
 			},
 		};
@@ -98,27 +104,15 @@ const genericFactory = (hostId: string, transactionId?: string): any => ({
 		return this;
 	},
 
-	transfer(encryptedOrderData: string) {
+	/** Send one segment of upload order data. */
+	transfer(encryptedOrderData: string, number: number = 1, lastSegment: boolean = true) {
 		this.xmlSchema = {
 			'@': rootAttributes,
-
-			header: {
-				'@': { authenticate: true },
-				static: {
-					HostID: hostId,
-					TransactionID: transactionId,
-				},
-				mutable: {
-					TransactionPhase: 'Transfer',
-					SegmentNumber: {
-						'@': { lastSegment: true },
-						'#': 1,
-					},
-				},
-			},
-
+			header: followUpHeader(hostId, transactionId, {
+				TransactionPhase: 'Transfer',
+				SegmentNumber: segmentNumber(number, lastSegment),
+			}),
 			AuthSignature: authSignature,
-
 			body: {
 				DataTransfer: {
 					OrderData: encryptedOrderData,
@@ -128,7 +122,25 @@ const genericFactory = (hostId: string, transactionId?: string): any => ({
 
 		return this;
 	},
-	// };
+
+	/** Request the next segment of download order data. */
+	downloadTransfer(number: number, lastSegment: boolean) {
+		this.xmlSchema = {
+			'@': rootAttributes,
+			header: followUpHeader(hostId, transactionId, {
+				TransactionPhase: 'Transfer',
+				SegmentNumber: segmentNumber(number, lastSegment),
+			}),
+			AuthSignature: authSignature,
+			body: {},
+		};
+
+		return this;
+	},
+
+	toXML() {
+		return js2xmlparser.parse(this.rootName, this.xmlSchema, this.xmlOptions);
+	},
 });
 
 export default genericFactory;
