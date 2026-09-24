@@ -2,6 +2,7 @@
 
 #### [v6.0.0-beta.2](https://github.com/Kage0x3B/node-ebics-client/compare/v6.0.0-beta.1...v6.0.0-beta.2)
 
+- feat: read RSAKeyValue bank keys and report transaction details in results [`e94d246`](https://github.com/Kage0x3B/node-ebics-client/commit/e94d246276f87e890cbcce09e6bc062fb48effb2)
 - fix: make EBICS transactions safe and support segmented order data [`fc4a68d`](https://github.com/Kage0x3B/node-ebics-client/commit/fc4a68d6b6411a2c4fe79b3469f6ee2b0aa81533)
 
 #### [v6.0.0-beta.1](https://github.com/Kage0x3B/node-ebics-client/compare/v6.0.0-beta.0...v6.0.0-beta.1)
