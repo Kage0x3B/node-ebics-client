@@ -1,6 +1,14 @@
 ### Changelog
 
+#### [v6.0.0-beta.1](https://github.com/Kage0x3B/node-ebics-client/compare/v6.0.0-beta.0...v6.0.0-beta.1)
+
+- fix: detect broken EBICS exchanges instead of reporting them as success [`d4080a5`](https://github.com/Kage0x3B/node-ebics-client/commit/d4080a531261f25e9ddd8a2a27c1232c6e856cf9)
+- docs: document EbicsClientError codes and result phase [`6066f39`](https://github.com/Kage0x3B/node-ebics-client/commit/6066f39368f608b79a6131052d7f237924143739)
+- ci: trigger workflow run after enabling Actions on fork [`0070855`](https://github.com/Kage0x3B/node-ebics-client/commit/0070855d6db7db662a9cc12a6a63d0fdd36c0bed)
+
 #### [v6.0.0-beta.0](https://github.com/Kage0x3B/node-ebics-client/compare/v5.1.0-h005-h3k.0...v6.0.0-beta.0)
+
+> 7 May 2026
 
 - feat: rewrite in TypeScript, dual ESM+CJS, Node 22+ [`38dd048`](https://github.com/Kage0x3B/node-ebics-client/commit/38dd04855ed84c3a6225ad6fa8c6919ead19cdf0)
 
