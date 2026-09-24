@@ -1,20 +1,11 @@
-import crypto from 'node:crypto';
-
 import Crypto from '../../crypto/Crypto.js';
 
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import xpath from 'xpath';
 import errors from './errors.js';
 import { decryptOrderData } from '../orderData.js';
+import { parseBankKeys } from '../bankKeys.js';
 import type Keys from '../../keymanagers/Keys.js';
-
-const lastChild = (node: any): any => {
-	let y = node.lastChild;
-
-	while (y.nodeType !== 1) y = y.previousSibling;
-
-	return y;
-};
 
 const responseFactory = (xml: string, keys: Keys) => ({
 	keys,
@@ -168,24 +159,7 @@ const responseFactory = (xml: string, keys: Keys) => ({
 	},
 
 	bankKeys() {
-		const orderData = this.orderData().toString();
-		if (!orderData.length) return {};
-
-		const doc = new DOMParser().parseFromString(orderData, 'text/xml');
-		const select = xpath.useNamespaces({ ds: 'http://www.w3.org/2000/09/xmldsig#' });
-		const keyNodes = select('//ds:X509Data', doc as unknown as Node) as unknown as any[];
-		const bankKeys: Record<string, { pem: string }> = {};
-
-		if (!keyNodes.length) return {};
-
-		for (let i = 0; i < keyNodes.length; i++) {
-			const type = (xpath.select('.//*[local-name(.)=\'AuthenticationVersion\' or local-name(.)=\'EncryptionVersion\']', keyNodes[i].parentNode) as unknown as any[])[0].textContent;
-			const certificateBase64 = (select('.//ds:X509Certificate', keyNodes[i]) as unknown as any[])[0].textContent.trim();
-			const certificate = new crypto.X509Certificate(Buffer.from(certificateBase64, 'base64'));
-			bankKeys[`bank${type}`] = { pem: certificate.toString() };
-		}
-
-		return bankKeys;
+		return parseBankKeys(this.orderData().toString(), 'certificate');
 	},
 
 	toXML() {

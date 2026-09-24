@@ -55,6 +55,22 @@ Every EBICS request is one isolated HTTP exchange: the client never retries a re
 
 Order data larger than one segment is split and transferred segment by segment, in both directions. A download is acknowledged with `ReceiptCode 0` only after all its segments were decrypted and decompressed. If the data is unreadable or its segments do not add up, the client answers `ReceiptCode 1` so the bank delivers the data again (`error.redeliveryRequested` tells whether that went through). If the exchange breaks or the bank rejects a segment, no receipt is sent; the transaction times out at the bank and the data stays available.
 
+### Results
+
+Every result carries the bank's verdict (`technicalCode`, `businessCode` and their texts) plus:
+
+| Field | Meaning |
+|---|---|
+| `orderId` | OrderID assigned by the bank (uploads: from the last answer naming one), `''` if none |
+| `transactionId` | TransactionID of the EBICS transaction |
+| `phase` | The step whose verdict is reported: `'initialisation'`, `'transfer'` or `'receipt'` |
+| `numSegments` | Number of order data segments, when the transaction carried order data |
+| `segmentNumber` | Uploads: last segment sent; on a rejected transfer (both directions): the rejected segment |
+| `receiptCode` | Downloads: `0` once the data was read and the bank confirmed the receipt; absent if no receipt was sent |
+| `transactionAborted` | `true` for codes with which the bank ends the transaction (`061101` EBICS_TX_RECOVERY_SYNC, `091101`, `091102`, `091104`, `091105`, `011101`). The client does not resume transactions: send the order again, which starts over with a new initialisation |
+
+HPB accepts bank keys both as X.509 certificates (`ds:X509Data`) and as bare RSA keys (`PubKeyValue/ds:RSAKeyValue`).
+
 ### Error handling
 
 `client.send()` distinguishes two kinds of failure:

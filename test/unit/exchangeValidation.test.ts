@@ -205,6 +205,30 @@ describe('EBICS exchange validation', () => {
 			assert.include(result, { phase: 'initialisation', technicalCode: '000000', businessCode: '091005' });
 		});
 
+		it('reports the OrderID when the bank only names it in the transfer answer', async () => {
+			bank.queue.push({ body: h005Response({ transactionId: 'TX42', orderId: null }) }, { body: h005Response({ transactionId: 'TX42', orderId: 'N777' }) });
+
+			const result = await upload();
+
+			assert.include(result, { orderId: 'N777', numSegments: 1, segmentNumber: 1, transactionAborted: false });
+			assert.strictEqual((result as unknown as Record<number, string>)[1], 'N777', 'legacy [transactionId, orderId] form');
+		});
+
+		for (const code of ['061101', '091101', '091102', '091104', '091105', '011101'])
+			it(`flags technical code ${code} as an aborted transaction that must be restarted`, async () => {
+				bank.queue.push({ body: h005Response({ transactionId: 'TX42', orderId: 'N1' }) }, { body: h005Response({ transactionId: 'TX42', technicalCode: code }) });
+
+				const result = await upload();
+
+				assert.include(result, { phase: 'transfer', technicalCode: code, transactionAborted: true });
+			});
+
+		it('does not flag an ordinary business rejection as an aborted transaction', async () => {
+			bank.queue.push({ body: h005Response({ transactionId: null, orderId: null, businessCode: '091005' }) });
+
+			assert.include(await upload(), { transactionAborted: false });
+		});
+
 		it('rejects a transfer answer for a different transaction', async () => {
 			bank.queue.push({ body: h005Response({ transactionId: 'TX42' }) }, { body: h005Response({ transactionId: 'OTHER' }) });
 			await expectClientError(upload(), EbicsClientErrorCode.TRANSACTION_ID_MISMATCH);

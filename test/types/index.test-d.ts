@@ -107,6 +107,9 @@ declare const dl: EbicsDownloadResponse;
 expectType<Buffer>(dl.orderData);
 expectType<number | undefined>(dl.numSegments);
 expectType<number | undefined>(dl.segmentNumber);
+expectType<0 | undefined>(dl.receiptCode);
+expectType<boolean>(r.transactionAborted);
+expectType<number | undefined>(r.numSegments);
 
 // Error codes and details
 expectType<'EBICS_CLIENT_TIMEOUT'>(EbicsClientErrorCode.TIMEOUT);

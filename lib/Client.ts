@@ -19,6 +19,19 @@ import { MAX_SEGMENT_SIZE, assertSegmentSize, attachUploadTransaction, decryptOr
 const EBICS_OK = '000000';
 const RECEIPT_CONFIRMED = new Set(['011000', EBICS_OK]);
 
+/**
+ * Technical return codes with which the bank ends a transaction on its side. This client does not
+ * resume transactions (EBICS recovery), so each of them means: restart from the initialisation.
+ */
+const TRANSACTION_ABORTED_CODES = new Set([
+	'011101', // EBICS_TX_SEGMENT_NUMBER_UNDERRUN
+	'061101', // EBICS_TX_RECOVERY_SYNC
+	'091101', // EBICS_TX_UNKNOWN_TXID
+	'091102', // EBICS_TX_ABORT
+	'091104', // EBICS_TX_SEGMENT_NUMBER_EXCEEDED
+	'091105', // EBICS_RECOVERY_NOT_SUPPORTED
+]);
+
 /** Default time to wait for the bank's answer to one EBICS request. */
 export const DEFAULT_TIMEOUT = 60_000;
 
@@ -83,7 +96,19 @@ export interface BankKeys {
 
 export interface EbicsBaseResponse {
 	transactionId?: string;
+	/**
+	 * The OrderID the bank assigned (uploads: taken from the last answer that carries one, so it is
+	 * also found when a bank only reports it with the transfer). `''` when the bank sent none.
+	 */
 	orderId: string;
+	/** Number of order data segments of the transaction, when it carried order data. */
+	numSegments?: number;
+	/**
+	 * The bank aborted the transaction on its side (a recovery / transaction code such as
+	 * `061101` EBICS_TX_RECOVERY_SYNC or `091102` EBICS_TX_ABORT). The transaction cannot be
+	 * continued: send the order again, which starts a new transaction with a new initialisation.
+	 */
+	transactionAborted: boolean;
 	/**
 	 * The transaction step whose verdict this result reports. For an upload, `'initialisation'`
 	 * means the bank rejected the order before any order data was transferred.
@@ -100,8 +125,6 @@ export interface EbicsBaseResponse {
 }
 
 export interface EbicsUploadResponse extends EbicsBaseResponse {
-	/** Number of segments the order data was split into. */
-	numSegments?: number;
 	/**
 	 * The last segment sent. When the bank rejects a transfer, this is the rejected segment and
 	 * `phase` is `'transfer'`; the segments after it were not sent.
@@ -116,8 +139,11 @@ export interface EbicsKeyManagementResponse extends EbicsBaseResponse {
 
 export interface EbicsDownloadResponse extends EbicsBaseResponse {
 	orderData: Buffer;
-	/** Number of segments the order data was delivered in. */
-	numSegments?: number;
+	/**
+	 * The ReceiptCode the client sent and the bank confirmed: `0` once the order data was read and
+	 * acknowledged. Absent when no receipt was sent (rejected initialisation or transfer, no data).
+	 */
+	receiptCode?: 0;
 	/** When the bank rejects a transfer, the segment it rejected; `phase` is then `'transfer'` and `orderData` is empty. */
 	segmentNumber?: number;
 }
@@ -163,7 +189,7 @@ const decodeBody = (data: Buffer, encoding: string | undefined): Buffer => {
 };
 
 /** The bank's verdict on one step, in the shape of the public result objects. */
-const verdictOf = (res: any, phase: EbicsTransactionPhase): Omit<EbicsBaseResponse, 'transactionId'> => {
+const verdictOf = (res: any, phase: EbicsTransactionPhase): Omit<EbicsBaseResponse, 'transactionId' | 'numSegments'> => {
 	const technicalCode: string = res.technicalCode();
 	const businessCode: string = res.businessCode();
 
@@ -180,6 +206,8 @@ const verdictOf = (res: any, phase: EbicsTransactionPhase): Omit<EbicsBaseRespon
 		businessCodeSymbol: res.businessSymbol(businessCode),
 		businessCodeShortText: res.businessShortText(businessCode),
 		businessCodeMeaning: res.businessMeaning(businessCode),
+
+		transactionAborted: TRANSACTION_ABORTED_CODES.has(technicalCode),
 	};
 };
 
@@ -304,28 +332,12 @@ export default class Client {
 		if (this.tracesStorage) this.tracesStorage.new().ofType('ORDER.INI');
 		order.phase = 'initialisation';
 		const res = await this.ebicsRequest(order);
-		const xml = res.orderData();
-
-		const returnedTechnicalCode = res.technicalCode();
-		const returnedBusinessCode = res.businessCode();
+		const xml: Buffer = res.orderData();
 
 		return {
-			orderData: xml.length ? xml.toString() : xml,
-			orderId: res.orderId(),
-			phase: 'initialisation',
-
-			technicalCode: returnedTechnicalCode,
-			technicalCodeSymbol: res.technicalSymbol(),
-			technicalCodeShortText: res.technicalShortText(
-				returnedTechnicalCode,
-			),
-			technicalCodeMeaning: res.technicalMeaning(returnedTechnicalCode),
-
-			businessCode: returnedBusinessCode,
-			businessCodeSymbol: res.businessSymbol(returnedBusinessCode),
-			businessCodeShortText: res.businessShortText(returnedBusinessCode),
-			businessCodeMeaning: res.businessMeaning(returnedBusinessCode),
-
+			...verdictOf(res, 'initialisation'),
+			orderData: xml.toString(),
+			numSegments: res.numSegments() || (xml.length ? 1 : undefined),
 			bankKeys: res.bankKeys(),
 		};
 	}
@@ -351,7 +363,7 @@ export default class Client {
 
 		// An answer without any segment information and without order data opens nothing to acknowledge.
 		if (!res.isSegmented() && !res.orderDataSegment())
-			return { ...result, numSegments: 1, orderData: res.orderData() };
+			return { ...result, numSegments: undefined, orderData: res.orderData() };
 
 		let segments: string[];
 		try {
@@ -362,6 +374,7 @@ export default class Client {
 			if (!Array.isArray(collected))
 				return {
 					...verdictOf(collected.response, 'transfer'),
+					orderId: collected.response.orderId() || result.orderId,
 					orderData: Buffer.alloc(0),
 					transactionId,
 					numSegments: numSegments || undefined,
@@ -415,7 +428,7 @@ export default class Client {
 			);
 		}
 
-		return { ...result, numSegments: segments.length, orderData };
+		return { ...result, numSegments: segments.length, orderData, receiptCode: 0 };
 	}
 
 	/**
@@ -471,7 +484,7 @@ export default class Client {
 			order.phase = 'initialisation';
 			let res = await this.ebicsRequest(order);
 			const transactionId: string = res.transactionId();
-			const orderId: string = res.orderId();
+			let orderId: string = res.orderId();
 			let phase: EbicsTransactionPhase = 'initialisation';
 			let segmentNumber: number | undefined;
 
@@ -490,6 +503,7 @@ export default class Client {
 						this.tracesStorage.connect().ofType('TRANSFER.ORDER.UPLOAD');
 					res = await this.ebicsRequest(order);
 					this.assertSameTransaction(order, res, transactionId);
+					orderId = res.orderId() || orderId;
 
 					// The bank rejected this segment — report its verdict, send nothing more.
 					if (!isAccepted(res)) break;

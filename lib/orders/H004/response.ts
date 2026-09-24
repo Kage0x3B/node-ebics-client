@@ -4,15 +4,8 @@ import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import xpath from 'xpath';
 import errors from './errors.js';
 import { decryptOrderData } from '../orderData.js';
+import { parseBankKeys } from '../bankKeys.js';
 import type Keys from '../../keymanagers/Keys.js';
-
-const lastChild = (node: any): any => {
-	let y = node.lastChild;
-
-	while (y.nodeType !== 1) y = y.previousSibling;
-
-	return y;
-};
 
 const responseFactory = (xml: string, keys: Keys) => ({
 	keys,
@@ -161,36 +154,7 @@ const responseFactory = (xml: string, keys: Keys) => ({
 	},
 
 	bankKeys() {
-		const orderData = this.orderData().toString();
-		if (!orderData.length) return {};
-
-		const doc = new DOMParser().parseFromString(orderData, 'text/xml');
-		const select = xpath.useNamespaces({ xmlns: 'urn:org:ebics:H004' });
-		const keyNodes = select('//xmlns:PubKeyValue', doc as unknown as Node) as unknown as any[];
-		const bankKeys: Record<string, { mod: Buffer; exp: Buffer }> = {};
-
-		if (!keyNodes.length) return {};
-
-		for (let i = 0; i < keyNodes.length; i++) {
-			const type = lastChild(keyNodes[i].parentNode).textContent;
-			const modulus = (xpath.select(
-				".//*[local-name(.)='Modulus']",
-				keyNodes[i],
-			) as unknown as any[])[0].textContent;
-			const exponent = (xpath.select(
-				".//*[local-name(.)='Exponent']",
-				keyNodes[i],
-			) as unknown as any[])[0].textContent;
-
-			const mod = Buffer.from(modulus, 'base64');
-			const exp = Buffer.from(exponent, 'base64');
-			bankKeys[`bank${type}`] = {
-				mod,
-				exp,
-			};
-		}
-
-		return bankKeys;
+		return parseBankKeys(this.orderData().toString(), 'keyValue');
 	},
 
 	toXML() {

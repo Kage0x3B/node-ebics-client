@@ -333,6 +333,8 @@ describe('EBICS download transaction', function () {
 			assert.deepEqual(bank.phases(), ['Initialisation', 'Transfer']);
 			assert.deepEqual(bank.receiptCodes(), []);
 			assert.include(result, { phase: 'transfer', segmentNumber: 2, numSegments: 3, technicalCode: '091101', transactionId: TX_ID });
+			assert.isUndefined(result.receiptCode, 'no receipt was sent');
+			assert.isTrue(result.transactionAborted, '091101 ends the transaction');
 			assert.strictEqual(result.orderData.length, 0);
 		});
 
@@ -412,6 +414,7 @@ describe('EBICS download transaction', function () {
 			assert.deepEqual(bank.phases(), ['Initialisation', 'Transfer', 'Transfer', 'Receipt']);
 			assert.deepEqual(bank.segments(), [null, { number: 2, lastSegment: false }, { number: 3, lastSegment: true }, null]);
 			assert.deepEqual(bank.receiptCodes(), [0]);
+			assert.include(result, { numSegments: 3, receiptCode: 0, transactionAborted: false });
 		});
 
 		it('sends ReceiptCode 1 for unreadable order data', async () => {
