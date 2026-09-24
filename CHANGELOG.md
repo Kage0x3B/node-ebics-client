@@ -1,9 +1,16 @@
 ### Changelog
 
+#### [v6.0.0-beta.3](https://github.com/Kage0x3B/node-ebics-client/compare/v6.0.0-beta.2...v6.0.0-beta.3)
+
+- fix: accept the receipt confirmation code in the header or the body [`fd2b457`](https://github.com/Kage0x3B/node-ebics-client/commit/fd2b457f5523931d119e82451fcb5c5fd38d0cb6)
+- docs: list RSAKeyValue/result details change under v6.0.0-beta.2 [`e20d7a8`](https://github.com/Kage0x3B/node-ebics-client/commit/e20d7a88ede9220a8eee5522640a911e9844dfee)
+
 #### [v6.0.0-beta.2](https://github.com/Kage0x3B/node-ebics-client/compare/v6.0.0-beta.1...v6.0.0-beta.2)
 
-- feat: read RSAKeyValue bank keys and report transaction details in results [`e94d246`](https://github.com/Kage0x3B/node-ebics-client/commit/e94d246276f87e890cbcce09e6bc062fb48effb2)
+> 24 September 2026
+
 - fix: make EBICS transactions safe and support segmented order data [`fc4a68d`](https://github.com/Kage0x3B/node-ebics-client/commit/fc4a68d6b6411a2c4fe79b3469f6ee2b0aa81533)
+- feat: read RSAKeyValue bank keys and report transaction details in results [`e94d246`](https://github.com/Kage0x3B/node-ebics-client/commit/e94d246276f87e890cbcce09e6bc062fb48effb2)
 
 #### [v6.0.0-beta.1](https://github.com/Kage0x3B/node-ebics-client/compare/v6.0.0-beta.0...v6.0.0-beta.1)
 
