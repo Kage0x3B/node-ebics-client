@@ -41,6 +41,40 @@ For examples on how to use this library, take a look at the [examples](https://g
 
 If all these steps were executed successfully, you can now do all things EBICS, like fetching bank statements by running `pnpm tsx examples/send-sta-order.ts <environment> <bank> [entity]`, or actually use this library in your custom banking applications.
 
+### Error handling
+
+`client.send()` distinguishes two kinds of failure:
+
+- **Bank verdicts** — a well-formed EBICS response carrying a non-`000000` return code (e.g. `091005`, `090005`) is **returned** as a normal result. Check `technicalCode` / `businessCode`. For uploads, `phase` tells you whether the bank rejected the initialisation (`'initialisation'`, no order data was transferred) or the transfer (`'transfer'`).
+- **Broken exchanges** — anything that is not a valid EBICS answer **throws** an `EbicsClientError` with a string `code` (never a six-digit EBICS code), plus `phase`, `orderType`, `httpStatus`, `contentType` and the (truncated) `rawResponse`:
+
+| `code` | Meaning |
+|---|---|
+| `EBICS_CLIENT_HTTP_STATUS` | Non-200 HTTP status (e.g. a proxy/WAF error page) |
+| `EBICS_CLIENT_EMPTY_RESPONSE` | Empty response body |
+| `EBICS_CLIENT_MALFORMED_XML` | Body is not well-formed XML |
+| `EBICS_CLIENT_NON_EBICS_RESPONSE` | XML/HTML that is not an EBICS response |
+| `EBICS_CLIENT_VERSION_MISMATCH` | EBICS response of another protocol version (e.g. H004 to an H005 request) |
+| `EBICS_CLIENT_MISSING_RETURN_CODE` | Mandatory header or body `ReturnCode` missing |
+| `EBICS_CLIENT_MISSING_TRANSACTION_ID` | Initialisation accepted without a `TransactionID` — the order data was **not** sent |
+| `EBICS_CLIENT_TRANSACTION_ID_MISMATCH` | A transfer/receipt answer names a different transaction |
+
+```ts
+import { EbicsClientError, EbicsClientErrorCode } from '@kage0x3b/ebics-client';
+
+try {
+	const result = await client.send(order);
+	if (result.technicalCode !== '000000' || result.businessCode !== '000000') {
+		// the bank rejected the order
+	}
+} catch (error) {
+	if (error instanceof EbicsClientError && error.code === EbicsClientErrorCode.HTTP_STATUS) {
+		console.error(error.httpStatus, error.rawResponse);
+	}
+	throw error;
+}
+```
+
 ## Supported Banks
 
 The client is currently tested and verified to work with the following banks:
