@@ -522,6 +522,18 @@ describe('EBICS download transaction', function () {
 			assert.deepEqual(bank.receiptCodes(), [0]);
 		});
 
+		it('succeeds when the bank reports 011000 as the body ReturnCode with 000000 in the header', async () => {
+			const payload = makePayload();
+			bank.queue.push(...segmentedAnswers('H005', encryptDownload(payload, encryptionPem, 2)), {
+				body: downloadResponse({ phase: 'Receipt', technicalCode: '000000', businessCode: '011000' }),
+			});
+
+			const result = await downloadH005();
+
+			assert.strictEqual(Buffer.from(result.orderData).toString(), payload.toString());
+			assert.strictEqual(result.receiptCode, 0);
+		});
+
 		const unconfirmed: Array<{ name: string; technicalCode: string; businessCode: string }> = [
 			{ name: 'a technical error (091101)', technicalCode: '091101', businessCode: '000000' },
 			{ name: 'a business error', technicalCode: '011000', businessCode: '090003' },

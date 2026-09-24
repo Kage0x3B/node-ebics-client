@@ -17,7 +17,15 @@ import EbicsClientError, { EbicsClientErrorCode, type EbicsClientErrorDetails, t
 import { MAX_SEGMENT_SIZE, assertSegmentSize, attachUploadTransaction, decryptOrderData, prepareUploadTransaction } from './orders/orderData.js';
 
 const EBICS_OK = '000000';
-const RECEIPT_CONFIRMED = new Set(['011000', EBICS_OK]);
+/**
+ * Answers to a receipt. EBICS lists 011000 / 011001 as technical codes, but banks (and test servers)
+ * also report them as the body ReturnCode with 000000 in the header — accept either placement.
+ */
+const RECEIPT_ANSWER = {
+	0: new Set(['011000', EBICS_OK]), // EBICS_DOWNLOAD_POSTPROCESS_DONE
+	// EBICS_DOWNLOAD_POSTPROCESS_SKIPPED; for a redelivery request any positive answer means it went through.
+	1: new Set(['011001', '011000', EBICS_OK]),
+} as const;
 
 /**
  * Technical return codes with which the bank ends a transaction on its side. This client does not
@@ -667,8 +675,10 @@ export default class Client {
 		const receipt = await this.ebicsRequest(order);
 		this.assertSameTransaction(order, receipt, transactionId);
 
-		// A confirmed receipt is answered with 011000 EBICS_DOWNLOAD_POSTPROCESS_DONE (some banks send 000000).
-		if (receiptCode === 0 && (!RECEIPT_CONFIRMED.has(receipt.technicalCode()) || receipt.businessCode() !== EBICS_OK))
+		// A receipt is answered with 011000 (ReceiptCode 0) / 011001 (ReceiptCode 1), in the header or
+		// the body, or plainly with 000000.
+		const accepted = RECEIPT_ANSWER[receiptCode];
+		if (!accepted.has(receipt.technicalCode()) || !accepted.has(receipt.businessCode()))
 			throw new EbicsClientError(EbicsClientErrorCode.RECEIPT_FAILED, 'Bank did not confirm the receipt', {
 				...this.errorContext(order),
 				technicalCode: receipt.technicalCode(),
