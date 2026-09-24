@@ -1,6 +1,12 @@
 ### Changelog
 
+#### [v6.0.0-beta.2](https://github.com/Kage0x3B/node-ebics-client/compare/v6.0.0-beta.1...v6.0.0-beta.2)
+
+- fix: make EBICS transactions safe and support segmented order data [`fc4a68d`](https://github.com/Kage0x3B/node-ebics-client/commit/fc4a68d6b6411a2c4fe79b3469f6ee2b0aa81533)
+
 #### [v6.0.0-beta.1](https://github.com/Kage0x3B/node-ebics-client/compare/v6.0.0-beta.0...v6.0.0-beta.1)
+
+> 24 September 2026
 
 - fix: detect broken EBICS exchanges instead of reporting them as success [`d4080a5`](https://github.com/Kage0x3B/node-ebics-client/commit/d4080a531261f25e9ddd8a2a27c1232c6e856cf9)
 - docs: document EbicsClientError codes and result phase [`6066f39`](https://github.com/Kage0x3B/node-ebics-client/commit/6066f39368f608b79a6131052d7f237924143739)
