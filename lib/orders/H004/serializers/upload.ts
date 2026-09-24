@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import js2xmlparser from 'js2xmlparser';
 
 import Crypto from '../../../crypto/Crypto.js';
+import { isFollowUpPhase } from '../../phase.js';
 
 import downloadSerializer from './download.js';
 
@@ -57,7 +58,7 @@ export default {
 			userId: client.userId,
 			hostId: client.hostId,
 		};
-		const { transactionId, document } = order;
+		const { document } = order;
 		const {
 			rootName, xmlOptions, xmlSchema, transfer,
 		} = await downloadSerializer.use(order, client);
@@ -67,7 +68,7 @@ export default {
 		this.xmlSchema = xmlSchema;
 		this.transfer = transfer;
 
-		if (transactionId) return this.transfer(encryptedOrderData(document, transKey));
+		if (isFollowUpPhase(order)) return this.transfer(encryptedOrderData(document, transKey));
 
 		this.xmlSchema.header.static.NumSegments = 1;
 		this.xmlSchema.body = {

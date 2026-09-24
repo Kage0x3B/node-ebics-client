@@ -1,6 +1,7 @@
 import js2xmlparser from 'js2xmlparser';
 
 import Crypto from '../../../crypto/Crypto.js';
+import { isFollowUpPhase } from '../../phase.js';
 import genericSerializer from './generic.js';
 
 export default {
@@ -30,7 +31,7 @@ export default {
 		this.receipt = receipt;
 		this.transfer = transfer;
 
-		if (transactionId) return this.receipt();
+		if (isFollowUpPhase(order)) return this.receipt();
 
 		this.xmlSchema.header = {
 			'@': { authenticate: true },

@@ -5,9 +5,12 @@ import fsKeysStorage from './lib/storages/fsKeysStorage.js';
 import inMemoryKeysStorage from './lib/storages/inMemoryKeysStorage.js';
 import tracesStorage from './lib/storages/tracesStorage.js';
 import BankLetter from './lib/BankLetter.js';
+import EbicsClientError, { EbicsClientErrorCode } from './lib/EbicsClientError.js';
 
 export {
 	Client,
+	EbicsClientError,
+	EbicsClientErrorCode,
 	OrdersH004,
 	OrdersH005,
 	BankLetter,
@@ -20,6 +23,7 @@ export {
 export const Orders = OrdersH004;
 
 export type { ClientOptions, EbicsBaseResponse, EbicsUploadResponse, EbicsKeyManagementResponse, EbicsDownloadResponse, BankKeys } from './lib/Client.js';
+export type { EbicsClientErrorDetails, EbicsTransactionPhase } from './lib/EbicsClientError.js';
 export type { CertificateOptions } from './lib/keymanagers/Key.js';
 export type { BankLetterOptions } from './lib/BankLetter.js';
 export type { FsKeysStorage } from './lib/storages/fsKeysStorage.js';
@@ -27,6 +31,8 @@ export type { TracesStorage } from './lib/storages/tracesStorage.js';
 
 export default {
 	Client,
+	EbicsClientError,
+	EbicsClientErrorCode,
 	Orders: OrdersH004,
 	OrdersH004,
 	OrdersH005,

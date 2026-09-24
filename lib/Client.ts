@@ -12,6 +12,10 @@ import type { TracesStorage } from './storages/tracesStorage.js';
 import signer from './middleware/signer.js';
 import serializer from './middleware/serializer.js';
 import response from './middleware/response.js';
+import { assertEbicsResponse, assertReturnCodes } from './middleware/responseValidator.js';
+import EbicsClientError, { EbicsClientErrorCode, type EbicsTransactionPhase } from './EbicsClientError.js';
+
+const EBICS_OK = '000000';
 
 export interface ClientOptions {
 	url: string;
@@ -43,6 +47,11 @@ export interface BankKeys {
 export interface EbicsBaseResponse {
 	transactionId?: string;
 	orderId: string;
+	/**
+	 * The transaction step whose verdict this result reports. For an upload, `'initialisation'`
+	 * means the bank rejected the order before any order data was transferred.
+	 */
+	phase?: EbicsTransactionPhase;
 	technicalCode: string;
 	technicalCodeSymbol: string;
 	technicalCodeShortText: string;
@@ -69,10 +78,19 @@ interface OrderLike {
 	operation: string;
 	orderDetails: { OrderType?: string; AdminOrderType?: string; [k: string]: unknown };
 	transactionId?: string;
+	/** Set by the client for follow-up requests; serializers must not infer the phase from `transactionId`. */
+	phase?: EbicsTransactionPhase;
 	document?: string | Buffer;
 	needsExistingKeys?: boolean;
 	[k: string]: unknown;
 }
+
+const orderTypeOf = (order: OrderLike): string =>
+	String(order.orderDetails.AdminOrderType || order.orderDetails.OrderType || 'UNKNOWN');
+
+/** Both return codes report success — the bank accepted this step. */
+const isAccepted = (res: { technicalCode(): string; businessCode(): string }): boolean =>
+	res.technicalCode() === EBICS_OK && res.businessCode() === EBICS_OK;
 
 const stringifyKeys = (keys: Record<string, unknown>): string => {
 	Object.keys(keys).map((key) => {
@@ -172,6 +190,7 @@ export default class Client {
 		}
 
 		if (this.tracesStorage) this.tracesStorage.new().ofType('ORDER.INI');
+		order.phase = 'initialisation';
 		const res = await this.ebicsRequest(order);
 		const xml = res.orderData();
 
@@ -181,6 +200,7 @@ export default class Client {
 		return {
 			orderData: xml.length ? xml.toString() : xml,
 			orderId: res.orderId(),
+			phase: 'initialisation',
 
 			technicalCode: returnedTechnicalCode,
 			technicalCodeSymbol: res.technicalSymbol(),
@@ -201,15 +221,23 @@ export default class Client {
 	async download(order: OrderLike): Promise<EbicsDownloadResponse> {
 		if (this.tracesStorage)
 			this.tracesStorage.new().ofType('ORDER.DOWNLOAD');
+		order.phase = 'initialisation';
 		const res = await this.ebicsRequest(order);
 
-		order.transactionId = res.transactionId();
+		const transactionId: string = res.transactionId();
+		// An accepted download always opens a transaction; without its ID no receipt can be sent.
+		if (isAccepted(res) && !transactionId)
+			throw this.missingTransactionId(order, res);
+
+		order.transactionId = transactionId;
 
 		if (res.isSegmented() && res.isLastSegment()) {
 			if (this.tracesStorage)
 				this.tracesStorage.connect().ofType('RECEIPT.ORDER.DOWNLOAD');
 
-			await this.ebicsRequest(order);
+			order.phase = 'receipt';
+			const receipt = await this.ebicsRequest(order);
+			this.assertSameTransaction(order, receipt, transactionId);
 		}
 
 		const returnedTechnicalCode = res.technicalCode();
@@ -217,8 +245,9 @@ export default class Client {
 
 		return {
 			orderData: res.orderData(),
-			transactionId: res.transactionId(),
+			transactionId,
 			orderId: res.orderId(),
+			phase: 'initialisation',
 
 			technicalCode: returnedTechnicalCode,
 			technicalCodeSymbol: res.technicalSymbol(),
@@ -236,22 +265,35 @@ export default class Client {
 
 	async upload(order: OrderLike): Promise<EbicsUploadResponse & { 0: string; 1: string; [Symbol.iterator](): Generator<string> }> {
 		if (this.tracesStorage) this.tracesStorage.new().ofType('ORDER.UPLOAD');
+		order.phase = 'initialisation';
 		let res = await this.ebicsRequest(order);
-		const transactionId = res.transactionId();
-		const orderId = res.orderId();
+		const transactionId: string = res.transactionId();
+		const orderId: string = res.orderId();
+		let phase: EbicsTransactionPhase = 'initialisation';
 
-		order.transactionId = transactionId;
+		if (isAccepted(res)) {
+			// Without a TransactionID the order data cannot be transferred — the bank would never
+			// see the order, however "successful" the initialisation looked.
+			if (!transactionId) throw this.missingTransactionId(order, res);
 
-		if (this.tracesStorage)
-			this.tracesStorage.connect().ofType('TRANSFER.ORDER.UPLOAD');
-		res = await this.ebicsRequest(order);
+			order.transactionId = transactionId;
+			order.phase = 'transfer';
+			phase = 'transfer';
+
+			if (this.tracesStorage)
+				this.tracesStorage.connect().ofType('TRANSFER.ORDER.UPLOAD');
+			res = await this.ebicsRequest(order);
+			this.assertSameTransaction(order, res, transactionId);
+		}
+		// else: the bank rejected the initialisation — report that verdict, transfer nothing.
 
 		const returnedTechnicalCode = res.technicalCode();
 		const returnedBusinessCode = res.businessCode();
 
 		return {
-			transactionId,
+			transactionId: transactionId || undefined,
 			orderId,
+			phase,
 
 			technicalCode: returnedTechnicalCode,
 			technicalCodeSymbol: res.technicalSymbol(),
@@ -292,7 +334,7 @@ export default class Client {
 
 				if (this.tracesStorage)
 					this.tracesStorage
-						.label(`REQUEST.${order.orderDetails.AdminOrderType || order.orderDetails.OrderType}`)
+						.label(`REQUEST.${orderTypeOf(order)}`)
 						.data(signedXml)
 						.persist();
 
@@ -303,27 +345,79 @@ export default class Client {
 					headers: { 'content-type': 'text/xml;charset=UTF-8' },
 					agent: this.agent,
 				},
-				(err, _res, data) => {
+				(err, res, data) => {
 					if (err) {
 						reject(err);
 						return;
 					}
 
-					const ebicsResponse = response.version(version)(data.toString('utf-8'), keys!);
+					try {
+						const raw = {
+							body: data ? data.toString('utf-8') : '',
+							httpStatus: res?.statusCode,
+							contentType: res?.headers?.['content-type'],
+						};
+						const context = { phase: order.phase, orderType: orderTypeOf(order) };
 
-					if (this.tracesStorage)
-						this.tracesStorage
-							.label(`RESPONSE.${order.orderDetails.AdminOrderType || order.orderDetails.OrderType}`)
-							.connect()
-							.data(ebicsResponse.toXML())
-							.persist();
+						// Persist the RAW body (not a re-serialisation) before validating it, so a
+						// rejected response — an HTML error page, an empty body — is still on record.
+						if (this.tracesStorage)
+							this.tracesStorage
+								.label(`RESPONSE.${orderTypeOf(order)}`)
+								.connect()
+								.data(raw.body || `<!-- empty response body (HTTP ${raw.httpStatus ?? 'unknown'}) -->`)
+								.persist();
 
-					resolve(ebicsResponse);
+						assertEbicsResponse(version, raw, context);
+						const ebicsResponse = response.version(version)(raw.body, keys!);
+						assertReturnCodes(
+							{ technicalCode: ebicsResponse.technicalCode(), businessCode: ebicsResponse.businessCode() },
+							raw,
+							context,
+						);
+
+						resolve(ebicsResponse);
+					} catch (validationError) {
+						reject(validationError as Error);
+					}
 				});
 			} catch (err) {
 				reject(err as Error);
 			}
 		});
+	}
+
+	private missingTransactionId(order: OrderLike, res: any): EbicsClientError {
+		return new EbicsClientError(
+			EbicsClientErrorCode.MISSING_TRANSACTION_ID,
+			'Bank accepted the initialisation but assigned no TransactionID',
+			{
+				phase: 'initialisation',
+				orderType: orderTypeOf(order),
+				technicalCode: res.technicalCode(),
+				businessCode: res.businessCode(),
+				rawResponse: res.toXML(),
+			},
+		);
+	}
+
+	/** A follow-up response that names a TransactionID must name the one in progress. */
+	private assertSameTransaction(order: OrderLike, res: any, transactionId: string): void {
+		const returned: string = res.transactionId();
+		if (!returned || returned === transactionId) return;
+
+		throw new EbicsClientError(
+			EbicsClientErrorCode.TRANSACTION_ID_MISMATCH,
+			`Expected TransactionID ${transactionId}, response names ${returned}`,
+			{
+				phase: order.phase,
+				orderType: orderTypeOf(order),
+				technicalCode: res.technicalCode(),
+				businessCode: res.businessCode(),
+				transactionId,
+				rawResponse: res.toXML(),
+			},
+		);
 	}
 
 	async signOrder(order: OrderLike): Promise<string> {

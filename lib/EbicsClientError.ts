@@ -1,0 +1,79 @@
+/**
+ * Error codes raised by the client itself when an EBICS exchange is broken in a way the bank did
+ * not report with a regular EBICS return code: the HTTP layer failed, the body is not an EBICS
+ * response at all, or a mandatory protocol field is missing. They are deliberately string symbols
+ * so they can never be confused with the bank's six-digit EBICS return codes.
+ *
+ * A genuine bank verdict (a well-formed response carrying e.g. `091005`) is NOT an error here — it
+ * is returned as a normal result so callers can read `technicalCode` / `businessCode`.
+ */
+export const EbicsClientErrorCode = {
+	/** The server answered with a non-200 HTTP status. EBICS responses are always sent with HTTP 200. */
+	HTTP_STATUS: 'EBICS_CLIENT_HTTP_STATUS',
+	/** The response body was empty. */
+	EMPTY_RESPONSE: 'EBICS_CLIENT_EMPTY_RESPONSE',
+	/** The response body is not well-formed XML. */
+	MALFORMED_XML: 'EBICS_CLIENT_MALFORMED_XML',
+	/** The response is XML (or HTML), but not an EBICS response document. */
+	NON_EBICS_RESPONSE: 'EBICS_CLIENT_NON_EBICS_RESPONSE',
+	/** The response is an EBICS document of a different protocol version than the request. */
+	VERSION_MISMATCH: 'EBICS_CLIENT_VERSION_MISMATCH',
+	/** The mandatory header (technical) or body (business) ReturnCode is missing. */
+	MISSING_RETURN_CODE: 'EBICS_CLIENT_MISSING_RETURN_CODE',
+	/** The bank accepted the initialisation but did not assign a TransactionID. */
+	MISSING_TRANSACTION_ID: 'EBICS_CLIENT_MISSING_TRANSACTION_ID',
+	/** A follow-up phase was answered for a different TransactionID than the one in progress. */
+	TRANSACTION_ID_MISMATCH: 'EBICS_CLIENT_TRANSACTION_ID_MISMATCH',
+} as const;
+
+export type EbicsClientErrorCode = (typeof EbicsClientErrorCode)[keyof typeof EbicsClientErrorCode];
+
+/** The step of an EBICS transaction a request belongs to. Key management (INI/HIA/HPB) is a single initialisation step. */
+export type EbicsTransactionPhase = 'initialisation' | 'transfer' | 'receipt';
+
+export interface EbicsClientErrorDetails {
+	phase?: EbicsTransactionPhase;
+	orderType?: string;
+	httpStatus?: number;
+	contentType?: string;
+	/** The raw response body, truncated to {@link MAX_RAW_RESPONSE_LENGTH} characters. */
+	rawResponse?: string;
+	technicalCode?: string;
+	businessCode?: string;
+	transactionId?: string;
+}
+
+/** Upper bound for the raw body kept on the error, so a large HTML error page cannot bloat logs. */
+export const MAX_RAW_RESPONSE_LENGTH = 64 * 1024;
+
+export default class EbicsClientError extends Error implements EbicsClientErrorDetails {
+	override readonly name = 'EbicsClientError';
+	readonly code: EbicsClientErrorCode;
+	readonly phase?: EbicsTransactionPhase;
+	readonly orderType?: string;
+	readonly httpStatus?: number;
+	readonly contentType?: string;
+	readonly rawResponse?: string;
+	readonly technicalCode?: string;
+	readonly businessCode?: string;
+	readonly transactionId?: string;
+
+	constructor(code: EbicsClientErrorCode, message: string, details: EbicsClientErrorDetails = {}) {
+		const context = [
+			details.orderType && `order ${details.orderType}`,
+			details.phase && `phase ${details.phase}`,
+			details.httpStatus !== undefined && `HTTP ${details.httpStatus}`,
+		].filter(Boolean).join(', ');
+		super(`${code}: ${message}${context ? ` (${context})` : ''}`);
+
+		this.code = code;
+		this.phase = details.phase;
+		this.orderType = details.orderType;
+		this.httpStatus = details.httpStatus;
+		this.contentType = details.contentType;
+		this.rawResponse = details.rawResponse?.slice(0, MAX_RAW_RESPONSE_LENGTH);
+		this.technicalCode = details.technicalCode;
+		this.businessCode = details.businessCode;
+		this.transactionId = details.transactionId;
+	}
+}
