@@ -106,3 +106,38 @@ describe('H005 order generation', () => {
 		});
 	}
 });
+
+describe('H005 BTU SignatureFlag', () => {
+	const sddOrder = (options: { signatureFlag?: string | boolean; requestEDS?: boolean }) =>
+		Orders.genericUpload('<Document/>', {
+			serviceName: 'SDD',
+			serviceOption: 'COR',
+			msgName: 'pain.008',
+			...options,
+		});
+
+	before(async () => {
+		await client.generateKeys({
+			subject: 'ebics.example.com',
+		}, ['A006', 'E002', 'X002', 'bankE002', 'bankX002']);
+	});
+
+	// BCEE rejects text content with HTTP 400 "Invalid XML": SignatureFlagType has empty content.
+	it('emits an empty, schema-valid SignatureFlag', async () => {
+		const signedOrder = await client.signOrder(sddOrder({ signatureFlag: 'true' }) as never);
+		assert.include(signedOrder, '<SignatureFlag/>');
+		assert.isTrue(await validateXML(signedOrder));
+	});
+
+	it('emits requestEDS as an attribute, schema-valid', async () => {
+		const signedOrder = await client.signOrder(sddOrder({ signatureFlag: true, requestEDS: true }) as never);
+		assert.include(signedOrder, '<SignatureFlag requestEDS="true"/>');
+		assert.isTrue(await validateXML(signedOrder));
+	});
+
+	it('omits SignatureFlag when not requested', async () => {
+		const signedOrder = await client.signOrder(sddOrder({}) as never);
+		assert.notInclude(signedOrder, 'SignatureFlag');
+		assert.isTrue(await validateXML(signedOrder));
+	});
+});

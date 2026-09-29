@@ -73,7 +73,9 @@ interface GenericCommonOrderOptionsH005 {
 }
 
 export interface GenericUploadOrderOptionsH005 extends GenericCommonOrderOptionsH005 {
-	signatureFlag?: string;
+	/** Any truthy value emits an empty `<SignatureFlag/>` (order authorised in-band via ES). */
+	signatureFlag?: string | boolean;
+	/** Adds `requestEDS="true"`: spool the order into the distributed signature (VEU) queue. */
 	requestEDS?: boolean;
 }
 

@@ -9,10 +9,14 @@ const genericUpload = (
 		document = document.toString('utf-8');
 	}
 
+	// H005 `SignatureFlagType` has empty content: its presence alone asks for in-band ES
+	// authorisation, and `requestEDS` is an attribute. Text content (`<SignatureFlag>true</SignatureFlag>`)
+	// or a child element is schema-invalid — strict banks (e.g. BCEE) answer HTTP 400 "Invalid XML".
 	const signatureOptions = options.signatureFlag ? {
 		SignatureFlag: {
-			'#': options.signatureFlag,
-			requestEDS: options.requestEDS ? true : undefined,
+			'@': {
+				requestEDS: options.requestEDS ? 'true' : undefined,
+			},
 		},
 	} : {};
 
