@@ -1,6 +1,12 @@
 ### Changelog
 
+#### [v6.0.0-beta.4](https://github.com/Kage0x3B/node-ebics-client/compare/v6.0.0-beta.3...v6.0.0-beta.4)
+
+- fix: emit an empty, schema-valid H005 SignatureFlag [`8975aaf`](https://github.com/Kage0x3B/node-ebics-client/commit/8975aaf8a1e0c449634f90669ef377363c3d37b2)
+
 #### [v6.0.0-beta.3](https://github.com/Kage0x3B/node-ebics-client/compare/v6.0.0-beta.2...v6.0.0-beta.3)
+
+> 24 September 2026
 
 - fix: accept the receipt confirmation code in the header or the body [`fd2b457`](https://github.com/Kage0x3B/node-ebics-client/commit/fd2b457f5523931d119e82451fcb5c5fd38d0cb6)
 - docs: list RSAKeyValue/result details change under v6.0.0-beta.2 [`e20d7a8`](https://github.com/Kage0x3B/node-ebics-client/commit/e20d7a88ede9220a8eee5522640a911e9844dfee)
